@@ -185,7 +185,10 @@ async function executeRequest() {
 
 function renderExecutionResult(response) {
   const statusLabel = response.statusCode > 0 ? String(response.statusCode) : (response.errorType || "error");
-  elements.executeMeta.textContent = `${statusLabel} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms`;
+  const hasSuccessExample = Boolean(response.successExample && response.successExample.body && !response.isSuccessStatusCode);
+  elements.executeMeta.textContent =
+    `${statusLabel} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms` +
+    (hasSuccessExample ? " / success example available" : "");
 
   const requestMetaLines = [
     response.requestContentType ? `Content-Type: ${response.requestContentType}` : "",
@@ -202,6 +205,9 @@ function renderExecutionResult(response) {
   const errorBlock = response.errorMessage
     ? `Error: ${response.errorMessage}\n\n`
     : "";
+  const successExampleBlock = hasSuccessExample
+    ? formatSuccessExample(response.successExample)
+    : "";
   const noteBlock = Array.isArray(response.notes) && response.notes.length > 0
     ? `Notes:\n- ${response.notes.join("\n- ")}\n\n`
     : "";
@@ -214,9 +220,24 @@ function renderExecutionResult(response) {
     `${requestBlock}` +
     `${requestMetaBlock}` +
     `${errorBlock}` +
+    `${successExampleBlock}` +
     `${noteBlock}` +
     `${headersBlock}` +
     `${bodyBlock}`;
+}
+
+function formatSuccessExample(successExample) {
+  const metaLines = [
+    `Successful response example: ${successExample.statusCode || 200}`,
+    successExample.contentType ? `Content-Type: ${successExample.contentType}` : "",
+    successExample.source ? `Source: ${successExample.source}` : "",
+  ].filter(Boolean);
+
+  const notesBlock = Array.isArray(successExample.notes) && successExample.notes.length > 0
+    ? `Notes:\n- ${successExample.notes.join("\n- ")}\n\n`
+    : "";
+
+  return `${metaLines.join("\n")}\n\n${notesBlock}${successExample.body}\n\n`;
 }
 
 async function buildCoveragePlan() {

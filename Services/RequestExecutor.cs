@@ -12,11 +12,16 @@ public sealed class RequestExecutor
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly RequestBodyPlanner _requestBodyPlanner;
+    private readonly SuccessExamplePlanner _successExamplePlanner;
 
-    public RequestExecutor(IHttpClientFactory httpClientFactory, RequestBodyPlanner requestBodyPlanner)
+    public RequestExecutor(
+        IHttpClientFactory httpClientFactory,
+        RequestBodyPlanner requestBodyPlanner,
+        SuccessExamplePlanner successExamplePlanner)
     {
         _httpClientFactory = httpClientFactory;
         _requestBodyPlanner = requestBodyPlanner;
+        _successExamplePlanner = successExamplePlanner;
     }
 
     public async Task<ExecuteResponse> ExecuteAsync(ExecuteRequestInput input, ResolveRequestResponse resolved)
@@ -27,6 +32,7 @@ public sealed class RequestExecutor
         var stopwatch = Stopwatch.StartNew();
         Uri? finalUri = null;
         BodyPlanResponse? plan = null;
+        SuccessExampleResponse? successExample = null;
 
         try
         {
@@ -47,6 +53,7 @@ public sealed class RequestExecutor
 
             path = ApplyVariables(path, input.Variables);
             finalUri = new Uri(baseUri, path.TrimStart('/'));
+            successExample = _successExamplePlanner.Build(selectedOperation, method, finalUri);
 
             plan = _requestBodyPlanner.BuildPlan(new BodyPlanInput
             {
@@ -118,13 +125,14 @@ public sealed class RequestExecutor
                 RequestHeaders = requestHeaders,
                 BodyRequired = plan.BodyRequired,
                 BodySource = plan.BodySource,
-                Notes = BuildExecutionNotes(selectedOperation, path, preparedBody, plan)
+                Notes = BuildExecutionNotes(selectedOperation, path, preparedBody, plan),
+                SuccessExample = successExample
             };
         }
         catch (Exception exception)
         {
             stopwatch.Stop();
-            return BuildErrorResponse(method, finalUri, input, selectedOperation, plan, stopwatch.ElapsedMilliseconds, exception);
+            return BuildErrorResponse(method, finalUri, input, selectedOperation, plan, successExample, stopwatch.ElapsedMilliseconds, exception);
         }
     }
 
@@ -425,6 +433,7 @@ public sealed class RequestExecutor
         ExecuteRequestInput input,
         ApiOperation? operation,
         BodyPlanResponse? plan,
+        SuccessExampleResponse? successExample,
         long elapsedMilliseconds,
         Exception exception)
     {
@@ -485,7 +494,8 @@ public sealed class RequestExecutor
             RequestHeaders = BuildFallbackRequestHeaders(finalUri, input, plan),
             BodyRequired = plan?.BodyRequired ?? false,
             BodySource = plan?.BodySource ?? "none",
-            Notes = notes
+            Notes = notes,
+            SuccessExample = successExample
         };
     }
 

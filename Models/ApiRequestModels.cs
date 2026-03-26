@@ -87,6 +87,16 @@ public sealed class ExecuteResponse
     public bool BodyRequired { get; set; }
     public string BodySource { get; set; } = "none";
     public List<string> Notes { get; set; } = [];
+    public SuccessExampleResponse? SuccessExample { get; set; }
+}
+
+public sealed class SuccessExampleResponse
+{
+    public int StatusCode { get; set; } = 200;
+    public string ContentType { get; set; } = "application/json";
+    public string Body { get; set; } = string.Empty;
+    public string Source { get; set; } = "manual_schema";
+    public List<string> Notes { get; set; } = [];
 }
 
 public sealed class CoveragePlanInput
