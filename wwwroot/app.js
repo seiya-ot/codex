@@ -148,11 +148,26 @@ async function executeRequest() {
 
   try {
     const response = await postJson("/api/execute", payload);
-    elements.executeMeta.textContent = `${response.statusCode} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms`;
+    const statusLabel = response.statusCode > 0 ? String(response.statusCode) : (response.errorType || "error");
+    elements.executeMeta.textContent = `${statusLabel} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms`;
+
+    const noteBlock = Array.isArray(response.notes) && response.notes.length > 0
+      ? `Notes:\n- ${response.notes.join("\n- ")}\n\n`
+      : "";
+    const errorBlock = response.errorMessage
+      ? `Error: ${response.errorMessage}\n\n`
+      : "";
+    const headersBlock = response.responseHeaders && Object.keys(response.responseHeaders).length > 0
+      ? `${JSON.stringify(response.responseHeaders, null, 2)}\n\n`
+      : "";
+    const bodyBlock = response.responseBody || "(empty response body)";
+
     elements.responseViewer.textContent =
       `${response.method} ${response.finalUrl}\n\n` +
-      `${JSON.stringify(response.responseHeaders, null, 2)}\n\n` +
-      `${response.responseBody || "(empty response body)"}`;
+      `${errorBlock}` +
+      `${noteBlock}` +
+      `${headersBlock}` +
+      `${bodyBlock}`;
   } catch (error) {
     elements.executeMeta.textContent = "error";
     elements.responseViewer.textContent = formatError(error);
