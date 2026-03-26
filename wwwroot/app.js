@@ -1,6 +1,9 @@
 const state = {
   catalog: [],
   candidates: [],
+  autoResolveTimer: 0,
+  isRequestTextComposing: false,
+  resolveSequence: 0,
 };
 
 const elements = {
@@ -33,10 +36,13 @@ bootstrap().catch((error) => {
   elements.responseViewer.textContent = formatError(error);
 });
 
-elements.resolveButton.addEventListener("click", resolveRequest);
+elements.resolveButton.addEventListener("click", () => resolveRequest());
 elements.executeButton.addEventListener("click", executeRequest);
 elements.coverageButton.addEventListener("click", buildCoveragePlan);
 elements.refreshButton.addEventListener("click", refreshManuals);
+elements.requestText.addEventListener("input", handleRequestTextInput);
+elements.requestText.addEventListener("compositionstart", handleRequestTextCompositionStart);
+elements.requestText.addEventListener("compositionend", handleRequestTextCompositionEnd);
 
 async function bootstrap() {
   loadLocalSettings();
@@ -68,6 +74,19 @@ async function loadCatalog() {
 async function resolveRequest() {
   persistLocalSettings();
 
+  const hasSearchContext =
+    Boolean(elements.requestText.value.trim()) ||
+    Boolean(elements.method.value.trim()) ||
+    Boolean(elements.path.value.trim()) ||
+    Boolean(elements.operationId.value.trim());
+
+  if (!hasSearchContext) {
+    state.candidates = [];
+    renderCandidates();
+    return;
+  }
+
+  const currentSequence = ++state.resolveSequence;
   const payload = {
     requestText: elements.requestText.value,
     explicitMethod: elements.method.value,
@@ -77,6 +96,10 @@ async function resolveRequest() {
   };
 
   const response = await postJson("/api/resolve", payload);
+  if (currentSequence !== state.resolveSequence) {
+    return;
+  }
+
   state.candidates = response.candidates || [];
   renderCandidates();
 }
@@ -145,6 +168,7 @@ async function executeRequest() {
   const hadBody = Boolean(elements.body.value.trim());
   const plan = await planRequestBody({ overwriteBody: false });
   const payload = collectExecutePayload();
+
   if (!hadBody && plan.bodyGenerated) {
     payload.body = "";
     payload.contentType = plan.contentType || payload.contentType;
@@ -154,7 +178,7 @@ async function executeRequest() {
   const response = await postJson("/api/execute", payload);
   renderExecutionResult(response);
 
-  if (!hadBody && plan && plan.bodyGenerated) {
+  if (!hadBody && plan.bodyGenerated) {
     elements.body.value = plan.body || "";
   }
 }
@@ -163,15 +187,17 @@ function renderExecutionResult(response) {
   const statusLabel = response.statusCode > 0 ? String(response.statusCode) : (response.errorType || "error");
   elements.executeMeta.textContent = `${statusLabel} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms`;
 
-  const requestLines = [
-    `${response.method} ${response.finalUrl}`,
+  const requestMetaLines = [
     response.requestContentType ? `Content-Type: ${response.requestContentType}` : "",
     response.requestBodyFormat ? `Body format: ${response.requestBodyFormat}` : "",
     response.bodySource && response.bodySource !== "none" ? `Body source: ${response.bodySource}` : "",
   ].filter(Boolean);
 
-  const requestBlock = response.requestBody
-    ? `Request body:\n${response.requestBody}\n\n`
+  const requestBlock = response.requestDebugText
+    ? `Request:\n${response.requestDebugText}\n\n`
+    : "";
+  const requestMetaBlock = requestMetaLines.length > 0
+    ? `${requestMetaLines.join("\n")}\n\n`
     : "";
   const errorBlock = response.errorMessage
     ? `Error: ${response.errorMessage}\n\n`
@@ -185,8 +211,8 @@ function renderExecutionResult(response) {
   const bodyBlock = response.responseBody || "(empty response body)";
 
   elements.responseViewer.textContent =
-    `${requestLines.join("\n")}\n\n` +
     `${requestBlock}` +
+    `${requestMetaBlock}` +
     `${errorBlock}` +
     `${noteBlock}` +
     `${headersBlock}` +
@@ -340,6 +366,43 @@ function persistLocalSettings() {
   localStorage.setItem("iij.accessToken", elements.accessToken.value);
   localStorage.setItem("iij.variables", elements.variables.value);
   localStorage.setItem("iij.headers", elements.headers.value);
+}
+
+function handleRequestTextInput(event) {
+  if (event.isComposing || state.isRequestTextComposing) {
+    return;
+  }
+
+  scheduleAutoResolve();
+}
+
+function handleRequestTextCompositionStart() {
+  state.isRequestTextComposing = true;
+  cancelAutoResolve();
+}
+
+function handleRequestTextCompositionEnd() {
+  state.isRequestTextComposing = false;
+  scheduleAutoResolve();
+}
+
+function scheduleAutoResolve() {
+  cancelAutoResolve();
+  state.autoResolveTimer = window.setTimeout(async () => {
+    try {
+      await resolveRequest();
+    } catch (error) {
+      elements.candidateMeta.textContent = "候補検索エラー";
+      elements.responseViewer.textContent = formatError(error);
+    }
+  }, 400);
+}
+
+function cancelAutoResolve() {
+  if (state.autoResolveTimer) {
+    window.clearTimeout(state.autoResolveTimer);
+    state.autoResolveTimer = 0;
+  }
 }
 
 function formatError(error) {

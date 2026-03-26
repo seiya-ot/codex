@@ -82,6 +82,8 @@ public sealed class ExecuteResponse
     public string RequestContentType { get; set; } = string.Empty;
     public string RequestBodyFormat { get; set; } = "json";
     public string RequestBody { get; set; } = string.Empty;
+    public string RequestDebugText { get; set; } = string.Empty;
+    public Dictionary<string, string[]> RequestHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public bool BodyRequired { get; set; }
     public string BodySource { get; set; } = "none";
     public List<string> Notes { get; set; } = [];

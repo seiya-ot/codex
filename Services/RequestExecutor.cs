@@ -85,6 +85,9 @@ public sealed class RequestExecutor
                 request.Content = CreateHttpContent(preparedBody, plan.ContentType, plan.BodyFormat);
             }
 
+            var requestHeaders = BuildHeadersSnapshot(request);
+            var requestDebugText = BuildRequestDebugText(method, finalUri, requestHeaders, preparedBody, plan);
+
             using var client = _httpClientFactory.CreateClient(nameof(RequestExecutor));
             client.Timeout = TimeSpan.FromSeconds(30);
 
@@ -111,6 +114,8 @@ public sealed class RequestExecutor
                 RequestContentType = plan.ContentType,
                 RequestBodyFormat = plan.BodyFormat,
                 RequestBody = preparedBody,
+                RequestDebugText = requestDebugText,
+                RequestHeaders = requestHeaders,
                 BodyRequired = plan.BodyRequired,
                 BodySource = plan.BodySource,
                 Notes = BuildExecutionNotes(selectedOperation, path, preparedBody, plan)
@@ -179,7 +184,8 @@ public sealed class RequestExecutor
     private static HttpContent CreateMultipartContent(string body)
     {
         using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
-        var multipart = new MultipartFormDataContent();
+        var boundary = "----CodexBoundary" + Guid.NewGuid().ToString("N");
+        var multipart = new MultipartFormDataContent(boundary);
 
         foreach (var property in document.RootElement.EnumerateObject())
         {
@@ -265,6 +271,122 @@ public sealed class RequestExecutor
         {
             return responseBody;
         }
+    }
+
+    private static Dictionary<string, string[]> BuildHeadersSnapshot(HttpRequestMessage request)
+    {
+        var contentHeaders = request.Content?.Headers ?? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>();
+        return request.Headers
+            .Concat(contentHeaders)
+            .Append(new KeyValuePair<string, IEnumerable<string>>("Host", [request.RequestUri?.Authority ?? string.Empty]))
+            .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.SelectMany(value => value.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRequestDebugText(
+        string method,
+        Uri finalUri,
+        IReadOnlyDictionary<string, string[]> requestHeaders,
+        string preparedBody,
+        BodyPlanResponse? plan)
+    {
+        var lines = new List<string>
+        {
+            $"{method} {finalUri.PathAndQuery} HTTP/1.1"
+        };
+
+        foreach (var header in requestHeaders
+                     .OrderBy(header => string.Equals(header.Key, "Host", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                     .ThenBy(header => header.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var value in header.Value)
+            {
+                lines.Add($"{header.Key}: {value}");
+            }
+        }
+
+        var bodyPreview = BuildRequestBodyPreview(preparedBody, plan, requestHeaders);
+        if (!string.IsNullOrWhiteSpace(bodyPreview))
+        {
+            lines.Add(string.Empty);
+            lines.Add(bodyPreview);
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string BuildRequestBodyPreview(
+        string preparedBody,
+        BodyPlanResponse? plan,
+        IReadOnlyDictionary<string, string[]> requestHeaders)
+    {
+        if (plan is null || !plan.ShouldSendBody || string.IsNullOrWhiteSpace(preparedBody))
+        {
+            return string.Empty;
+        }
+
+        if (string.Equals(plan.BodyFormat, "multipart", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildMultipartPreview(preparedBody, requestHeaders);
+        }
+
+        return preparedBody;
+    }
+
+    private static string BuildMultipartPreview(string preparedBody, IReadOnlyDictionary<string, string[]> requestHeaders)
+    {
+        using var document = JsonDocument.Parse(preparedBody);
+        var boundary = ExtractBoundary(requestHeaders) ?? "----CodexBoundary";
+        var lines = new List<string>();
+
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            lines.Add($"--{boundary}");
+
+            if (property.Value.ValueKind == JsonValueKind.Object &&
+                property.Value.TryGetProperty("base64", out var base64Property))
+            {
+                var fileName = property.Value.TryGetProperty("fileName", out var fileNameProperty)
+                    ? fileNameProperty.GetString() ?? $"{property.Name}.bin"
+                    : $"{property.Name}.bin";
+                var contentType = property.Value.TryGetProperty("contentType", out var contentTypeProperty)
+                    ? contentTypeProperty.GetString() ?? "application/octet-stream"
+                    : "application/octet-stream";
+
+                lines.Add($"Content-Disposition: form-data; name=\"{property.Name}\"; filename=\"{fileName}\"");
+                lines.Add($"Content-Type: {contentType}");
+                lines.Add(string.Empty);
+                lines.Add(base64Property.GetString() ?? string.Empty);
+            }
+            else
+            {
+                lines.Add($"Content-Disposition: form-data; name=\"{property.Name}\"");
+                lines.Add(string.Empty);
+                lines.Add(property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array
+                    ? property.Value.GetRawText()
+                    : property.Value.ToString());
+            }
+        }
+
+        lines.Add($"--{boundary}--");
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string? ExtractBoundary(IReadOnlyDictionary<string, string[]> requestHeaders)
+    {
+        if (!requestHeaders.TryGetValue("Content-Type", out var contentTypeValues))
+        {
+            return null;
+        }
+
+        var contentType = contentTypeValues.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(contentType, "boundary=(?:\"(?<boundary>[^\"]+)\"|(?<boundary>[^;]+))", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups["boundary"].Value : null;
     }
 
     private static List<string> BuildExecutionNotes(ApiOperation? operation, string path, string preparedBody, BodyPlanResponse? plan)
@@ -359,10 +481,61 @@ public sealed class RequestExecutor
             RequestContentType = plan?.ContentType ?? input.ContentType ?? string.Empty,
             RequestBodyFormat = plan?.BodyFormat ?? input.BodyFormat,
             RequestBody = preparedBody,
+            RequestDebugText = BuildFallbackRequestDebugText(method, finalUri, input, preparedBody, plan),
+            RequestHeaders = BuildFallbackRequestHeaders(finalUri, input, plan),
             BodyRequired = plan?.BodyRequired ?? false,
             BodySource = plan?.BodySource ?? "none",
             Notes = notes
         };
+    }
+
+    private static Dictionary<string, string[]> BuildFallbackRequestHeaders(
+        Uri? finalUri,
+        ExecuteRequestInput input,
+        BodyPlanResponse? plan)
+    {
+        var headers = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Host"] = [finalUri?.Authority ?? string.Empty]
+        };
+
+        if (!string.IsNullOrWhiteSpace(input.AccessToken))
+        {
+            headers["Authorization"] = [$"Bearer {input.AccessToken.Trim()}"];
+        }
+
+        foreach (var header in input.Headers)
+        {
+            if (string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            headers[header.Key] = [header.Value];
+        }
+
+        if (!string.IsNullOrWhiteSpace(plan?.ContentType) && plan.ShouldSendBody)
+        {
+            headers["Content-Type"] = [plan.ContentType];
+        }
+        else if (!string.IsNullOrWhiteSpace(input.ContentType))
+        {
+            headers["Content-Type"] = [input.ContentType];
+        }
+
+        return headers.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string BuildFallbackRequestDebugText(
+        string method,
+        Uri? finalUri,
+        ExecuteRequestInput input,
+        string preparedBody,
+        BodyPlanResponse? plan)
+    {
+        var uri = finalUri ?? new Uri("http://localhost/");
+        var headers = BuildFallbackRequestHeaders(finalUri, input, plan);
+        return BuildRequestDebugText(method, uri, headers, preparedBody, plan);
     }
 
     private static string BuildHttpRequestErrorMessage(Uri? finalUri, HttpRequestException exception)
