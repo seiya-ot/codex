@@ -1,0 +1,157 @@
+:root {
+  --bg: #f2eee6;
+  --paper: rgba(255, 252, 247, 0.9);
+  --ink: #1c2b29;
+  --muted: #596a68;
+  --line: rgba(28, 43, 41, 0.12);
+  --accent: #bf5b2b;
+  --accent-soft: #f3d7c8;
+  --ok: #1f7a57;
+  --warn: #ad6a00;
+  --danger: #9d2f1d;
+  --shadow: 0 24px 80px rgba(40, 31, 18, 0.12);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(191, 91, 43, 0.18), transparent 28rem),
+    radial-gradient(circle at 85% 20%, rgba(31, 122, 87, 0.12), transparent 24rem),
+    linear-gradient(180deg, #f8f3eb, var(--bg));
+  font-family: "BIZ UDPGothic", "Yu Gothic UI", sans-serif;
+}
+
+.shell {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 32px 20px 56px;
+}
+
+.hero, .panel {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 24px;
+  padding: 28px;
+  margin-bottom: 20px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.78rem;
+}
+
+h1, h2 { margin: 0 0 12px; }
+h1 { font-size: clamp(2rem, 4vw, 3.4rem); line-height: 1; }
+h2 { font-size: 1.1rem; }
+
+.lead { margin: 0; color: var(--muted); line-height: 1.7; max-width: 56rem; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-content: start; }
+
+.stat-card, .candidate, .coverage-item {
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.stat-card { padding: 16px; }
+.stat-card strong { display: block; font-size: 1.6rem; }
+.stat-card span { color: var(--muted); }
+
+.panel { padding: 22px; margin-bottom: 20px; }
+.two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.inline-grid { display: grid; grid-template-columns: 180px 1fr; gap: 12px; }
+
+label { display: block; margin-bottom: 12px; font-weight: 700; font-size: 0.93rem; }
+input, textarea, select, button { font: inherit; }
+
+input, textarea, select {
+  width: 100%;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+textarea { resize: vertical; }
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 18px;
+  cursor: pointer;
+  color: var(--ink);
+  background: #ebe4d8;
+}
+
+button.primary { background: linear-gradient(135deg, #d6723d, var(--accent)); color: #fff; }
+button:hover { filter: brightness(0.98); }
+
+.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; }
+.subtle { color: var(--muted); font-size: 0.88rem; }
+.candidate-list, .coverage-list { display: grid; gap: 12px; }
+.candidate, .coverage-item { padding: 16px; }
+.candidate header, .coverage-item header { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.badge.method { background: #dcefe3; color: var(--ok); }
+.candidate p, .coverage-item p { margin: 10px 0 0; color: var(--muted); line-height: 1.6; }
+.candidate .meta, .coverage-item .meta { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+.viewer {
+  margin: 0;
+  min-height: 380px;
+  max-height: 820px;
+  overflow: auto;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: #13201f;
+  color: #e9fff1;
+  line-height: 1.55;
+}
+
+.coverage-summary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.coverage-pill {
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  background: #efe8db;
+}
+
+.coverage-pill.ready { background: #dcefe3; color: var(--ok); }
+.coverage-pill.needs_input { background: #f5e8cd; color: var(--warn); }
+.coverage-pill.manual_fixture { background: #f5d8d2; color: var(--danger); }
+
+@media (max-width: 980px) {
+  .hero, .two-column { grid-template-columns: 1fr; }
+  .inline-grid { grid-template-columns: 1fr; }
+}

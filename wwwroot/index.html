@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Verification Workbench</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">IIJ / YESOD</p>
+        <h1>API Verification Workbench</h1>
+        <p class="lead">
+          日本語の依頼文から API 候補を引き当て、テナント URL とアクセストークンを指定してそのまま実行できます。
+          配下マニュアルの巡回結果をカタログ化して、網羅検証の土台にも使えます。
+        </p>
+      </div>
+      <div class="stats" id="overviewCards"></div>
+    </section>
+
+    <section class="panel two-column">
+      <div>
+        <h2>接続設定</h2>
+        <label>テナント URL
+          <input id="baseUrl" type="url" placeholder="https://example.igms.iij.jp">
+        </label>
+        <label>アクセストークン
+          <input id="accessToken" type="password" placeholder="Bearer の値のみを入力">
+        </label>
+      </div>
+      <div>
+        <h2>日本語リクエスト</h2>
+        <label>依頼文
+          <textarea id="requestText" rows="5" placeholder="例: 従業員履歴を memberId=abc123 で取得して"></textarea>
+        </label>
+        <div class="actions">
+          <button id="resolveButton" class="primary">候補を探す</button>
+          <button id="refreshButton">マニュアル再読込</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>候補 API</h2>
+        <span id="candidateMeta" class="subtle"></span>
+      </div>
+      <div id="candidates" class="candidate-list"></div>
+    </section>
+
+    <section class="panel two-column">
+      <div>
+        <h2>実行エディタ</h2>
+        <label>Operation ID
+          <input id="operationId" type="text" placeholder="候補から選択すると自動入力">
+        </label>
+        <div class="inline-grid">
+          <label>Method
+            <input id="method" type="text" placeholder="GET">
+          </label>
+          <label>Path
+            <input id="path" type="text" placeholder="/api/v22.10/query">
+          </label>
+        </div>
+        <div class="inline-grid">
+          <label>Content-Type
+            <input id="contentType" type="text" placeholder="application/json">
+          </label>
+          <label>Body format
+            <select id="bodyFormat">
+              <option value="json">json / text</option>
+              <option value="base64">base64 binary</option>
+            </select>
+          </label>
+        </div>
+        <label>Body
+          <textarea id="body" rows="10" placeholder='{"query":"..."}'></textarea>
+        </label>
+      </div>
+      <div>
+        <h2>変数と追加ヘッダ</h2>
+        <label>Variables JSON
+          <textarea id="variables" rows="10" placeholder='{"memberId":"abc123","taskId":"xyz"}'>{}</textarea>
+        </label>
+        <label>Headers JSON
+          <textarea id="headers" rows="8" placeholder='{"X-Custom-Header":"value"}'>{}</textarea>
+        </label>
+        <div class="actions">
+          <button id="executeButton" class="primary">実行</button>
+          <button id="coverageButton">検証プラン作成</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel two-column">
+      <div>
+        <div class="section-head">
+          <h2>実行結果</h2>
+          <span id="executeMeta" class="subtle"></span>
+        </div>
+        <pre id="responseViewer" class="viewer">未実行です。</pre>
+      </div>
+      <div>
+        <div class="section-head">
+          <h2>検証プラン</h2>
+          <span id="coverageMeta" class="subtle"></span>
+        </div>
+        <div id="coverageSummary" class="coverage-summary"></div>
+        <div id="coverageItems" class="coverage-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
