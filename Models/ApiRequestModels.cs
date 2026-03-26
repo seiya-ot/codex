@@ -50,6 +50,8 @@ public sealed class ExecuteResponse
     public Dictionary<string, string[]> ResponseHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string? UsedOperationId { get; set; }
     public string? UsedOperationSummary { get; set; }
+    public string? ErrorType { get; set; }
+    public string? ErrorMessage { get; set; }
     public List<string> Notes { get; set; } = [];
 }
 
