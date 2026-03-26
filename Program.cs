@@ -12,6 +12,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<ManualCatalogStore>();
 builder.Services.AddSingleton<RequestResolver>();
+builder.Services.AddSingleton<RequestBodyPlanner>();
 builder.Services.AddSingleton<RequestExecutor>();
 builder.Services.AddSingleton<CoveragePlanner>();
 
@@ -69,6 +70,38 @@ app.MapPost("/api/execute", async (ExecuteRequestInput input, RequestResolver re
     });
 
     var response = await executor.ExecuteAsync(input, resolved);
+    return Results.Ok(response);
+});
+
+app.MapPost("/api/body-plan", (BodyPlanInput input, RequestResolver resolver, RequestBodyPlanner planner) =>
+{
+    var resolved = resolver.Resolve(new ResolveRequestInput
+    {
+        OperationId = input.OperationId,
+        RequestText = input.RequestText,
+        ExplicitMethod = input.Method,
+        ExplicitPath = input.Path,
+        Top = 5
+    });
+
+    var selectedOperation = resolved.Candidates.FirstOrDefault()?.Operation;
+    if (selectedOperation is not null)
+    {
+        if (!string.IsNullOrWhiteSpace(input.Path) &&
+            !string.Equals(selectedOperation.Path, input.Path, StringComparison.OrdinalIgnoreCase))
+        {
+            selectedOperation = null;
+        }
+
+        if (selectedOperation is not null &&
+            !string.IsNullOrWhiteSpace(input.Method) &&
+            !string.Equals(selectedOperation.Method, input.Method, StringComparison.OrdinalIgnoreCase))
+        {
+            selectedOperation = null;
+        }
+    }
+
+    var response = planner.BuildPlan(input, selectedOperation);
     return Results.Ok(response);
 });
 
