@@ -83,7 +83,8 @@ async function resolveRequest() {
 
 function renderCandidates() {
   if (state.candidates.length === 0) {
-    elements.candidates.innerHTML = '<div class="candidate"><p>候補が見つかりませんでした。Method / Path を直接入力してください。</p></div>';
+    elements.candidates.innerHTML = '<div class="candidate"><p>候補が見つかりませんでした。Method / Path を直接入力して実行できます。</p></div>';
+    elements.candidateMeta.textContent = "候補なし";
     return;
   }
 
@@ -97,7 +98,7 @@ function renderCandidates() {
             <div class="badge method">${escapeHtml(operation.method)}</div>
             <h3>${escapeHtml(operation.summary)}</h3>
           </div>
-          <button data-operation-id="${escapeHtml(operation.id)}">使う</button>
+          <button data-operation-id="${escapeHtml(operation.id)}">選択</button>
         </header>
         <p>${escapeHtml(operation.path)}</p>
         <p>${escapeHtml(candidate.reasons.join(" / "))}</p>
@@ -112,66 +113,84 @@ function renderCandidates() {
   }).join("");
 
   elements.candidates.querySelectorAll("button[data-operation-id]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const candidate = state.candidates.find((item) => item.operation.id === button.dataset.operationId);
       if (!candidate) {
         return;
       }
 
-      const operation = candidate.operation;
-      elements.operationId.value = operation.id;
-      elements.method.value = operation.method;
-      elements.path.value = operation.path;
-      elements.contentType.value = operation.sampleContentType || "application/json";
-      elements.body.value = operation.sampleBody || "";
-      elements.responseViewer.textContent = `選択済み: ${operation.summary}\n${operation.method} ${operation.path}`;
+      await applySelectedOperation(candidate.operation);
     });
   });
+}
+
+async function applySelectedOperation(operation) {
+  elements.operationId.value = operation.id;
+  elements.method.value = operation.method;
+  elements.path.value = operation.path;
+  elements.contentType.value = operation.sampleContentType || "application/json";
+  elements.bodyFormat.value = "json";
+  elements.body.value = operation.sampleBody || "";
+
+  const plan = await planRequestBody({ overwriteBody: true });
+  elements.responseViewer.textContent =
+    `選択済み: ${operation.summary}\n` +
+    `${operation.method} ${operation.path}\n\n` +
+    formatPlanSummary(plan);
 }
 
 async function executeRequest() {
   persistLocalSettings();
 
-  const payload = {
-    operationId: elements.operationId.value || null,
-    requestText: elements.requestText.value,
-    baseUrl: elements.baseUrl.value,
-    accessToken: elements.accessToken.value,
-    method: elements.method.value || null,
-    path: elements.path.value || null,
-    contentType: elements.contentType.value || null,
-    bodyFormat: elements.bodyFormat.value,
-    body: elements.body.value,
-    variables: parseJsonField(elements.variables.value, "Variables JSON"),
-    headers: parseJsonField(elements.headers.value, "Headers JSON"),
-  };
-
-  try {
-    const response = await postJson("/api/execute", payload);
-    const statusLabel = response.statusCode > 0 ? String(response.statusCode) : (response.errorType || "error");
-    elements.executeMeta.textContent = `${statusLabel} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms`;
-
-    const noteBlock = Array.isArray(response.notes) && response.notes.length > 0
-      ? `Notes:\n- ${response.notes.join("\n- ")}\n\n`
-      : "";
-    const errorBlock = response.errorMessage
-      ? `Error: ${response.errorMessage}\n\n`
-      : "";
-    const headersBlock = response.responseHeaders && Object.keys(response.responseHeaders).length > 0
-      ? `${JSON.stringify(response.responseHeaders, null, 2)}\n\n`
-      : "";
-    const bodyBlock = response.responseBody || "(empty response body)";
-
-    elements.responseViewer.textContent =
-      `${response.method} ${response.finalUrl}\n\n` +
-      `${errorBlock}` +
-      `${noteBlock}` +
-      `${headersBlock}` +
-      `${bodyBlock}`;
-  } catch (error) {
-    elements.executeMeta.textContent = "error";
-    elements.responseViewer.textContent = formatError(error);
+  const hadBody = Boolean(elements.body.value.trim());
+  const plan = await planRequestBody({ overwriteBody: false });
+  const payload = collectExecutePayload();
+  if (!hadBody && plan.bodyGenerated) {
+    payload.body = "";
+    payload.contentType = plan.contentType || payload.contentType;
+    payload.bodyFormat = plan.bodyFormat || payload.bodyFormat;
   }
+
+  const response = await postJson("/api/execute", payload);
+  renderExecutionResult(response);
+
+  if (!hadBody && plan && plan.bodyGenerated) {
+    elements.body.value = plan.body || "";
+  }
+}
+
+function renderExecutionResult(response) {
+  const statusLabel = response.statusCode > 0 ? String(response.statusCode) : (response.errorType || "error");
+  elements.executeMeta.textContent = `${statusLabel} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms`;
+
+  const requestLines = [
+    `${response.method} ${response.finalUrl}`,
+    response.requestContentType ? `Content-Type: ${response.requestContentType}` : "",
+    response.requestBodyFormat ? `Body format: ${response.requestBodyFormat}` : "",
+    response.bodySource && response.bodySource !== "none" ? `Body source: ${response.bodySource}` : "",
+  ].filter(Boolean);
+
+  const requestBlock = response.requestBody
+    ? `Request body:\n${response.requestBody}\n\n`
+    : "";
+  const errorBlock = response.errorMessage
+    ? `Error: ${response.errorMessage}\n\n`
+    : "";
+  const noteBlock = Array.isArray(response.notes) && response.notes.length > 0
+    ? `Notes:\n- ${response.notes.join("\n- ")}\n\n`
+    : "";
+  const headersBlock = response.responseHeaders && Object.keys(response.responseHeaders).length > 0
+    ? `Response headers:\n${JSON.stringify(response.responseHeaders, null, 2)}\n\n`
+    : "";
+  const bodyBlock = response.responseBody || "(empty response body)";
+
+  elements.responseViewer.textContent =
+    `${requestLines.join("\n")}\n\n` +
+    `${requestBlock}` +
+    `${errorBlock}` +
+    `${noteBlock}` +
+    `${headersBlock}` +
+    `${bodyBlock}`;
 }
 
 async function buildCoveragePlan() {
@@ -198,7 +217,7 @@ async function buildCoveragePlan() {
         <span class="coverage-pill ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
       </header>
       <p>${escapeHtml(item.path)}</p>
-      <p>${escapeHtml(item.reasons.join(" / ") || "必要条件は揃っています。")}</p>
+      <p>${escapeHtml(item.reasons.join(" / ") || "理由なし")}</p>
     </article>
   `).join("");
 }
@@ -206,7 +225,71 @@ async function buildCoveragePlan() {
 async function refreshManuals() {
   await postJson("/api/admin/refresh-manuals", {});
   await Promise.all([loadOverview(), loadCatalog()]);
-  elements.responseViewer.textContent = "マニュアルカタログを再構築しました。";
+  elements.responseViewer.textContent = "マニュアルカタログを再取得しました。";
+}
+
+async function planRequestBody({ overwriteBody }) {
+  const payload = collectBodyPlanPayload();
+  const response = await postJson("/api/body-plan", payload);
+
+  elements.contentType.value = response.contentType || elements.contentType.value;
+  elements.bodyFormat.value = response.bodyFormat || elements.bodyFormat.value;
+
+  if (overwriteBody || !elements.body.value.trim()) {
+    elements.body.value = response.body || "";
+  }
+
+  return response;
+}
+
+function collectBodyPlanPayload() {
+  return {
+    operationId: elements.operationId.value || null,
+    requestText: elements.requestText.value,
+    baseUrl: elements.baseUrl.value,
+    method: elements.method.value || null,
+    path: elements.path.value || null,
+    contentType: elements.contentType.value || null,
+    bodyFormat: elements.bodyFormat.value,
+    body: elements.body.value,
+    variables: parseJsonField(elements.variables.value, "Variables JSON"),
+  };
+}
+
+function collectExecutePayload() {
+  return {
+    operationId: elements.operationId.value || null,
+    requestText: elements.requestText.value,
+    baseUrl: elements.baseUrl.value,
+    accessToken: elements.accessToken.value,
+    method: elements.method.value || null,
+    path: elements.path.value || null,
+    contentType: elements.contentType.value || null,
+    bodyFormat: elements.bodyFormat.value,
+    body: elements.body.value,
+    variables: parseJsonField(elements.variables.value, "Variables JSON"),
+    headers: parseJsonField(elements.headers.value, "Headers JSON"),
+  };
+}
+
+function formatPlanSummary(plan) {
+  const lines = [
+    `Content-Type: ${plan.contentType || "(none)"}`,
+    `Body format: ${plan.bodyFormat || "(none)"}`,
+    `Body required: ${plan.bodyRequired ? "yes" : "no"}`,
+    `Body source: ${plan.bodySource || "none"}`,
+  ];
+
+  if (Array.isArray(plan.notes) && plan.notes.length > 0) {
+    lines.push("", "Notes:");
+    plan.notes.forEach((note) => lines.push(`- ${note}`));
+  }
+
+  if (plan.body) {
+    lines.push("", "Body template:", plan.body);
+  }
+
+  return lines.join("\n");
 }
 
 function parseJsonField(raw, label) {

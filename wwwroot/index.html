@@ -13,8 +13,8 @@
         <p class="eyebrow">IIJ / YESOD</p>
         <h1>API Verification Workbench</h1>
         <p class="lead">
-          日本語の依頼文から API 候補を引き当て、テナント URL とアクセストークンを指定してそのまま実行できます。
-          配下マニュアルの巡回結果をカタログ化して、網羅検証の土台にも使えます。
+          日本語で実行したい API を入力すると、候補 API の解決、テナント URL とアクセストークンを使った実行、
+          実際に送る request body の自動生成までまとめて確認できます。
         </p>
       </div>
       <div class="stats" id="overviewCards"></div>
@@ -27,13 +27,13 @@
           <input id="baseUrl" type="url" placeholder="https://example.igms.iij.jp">
         </label>
         <label>アクセストークン
-          <input id="accessToken" type="password" placeholder="Bearer の値のみを入力">
+          <input id="accessToken" type="password" placeholder="Bearer の後ろの値だけを入力">
         </label>
       </div>
       <div>
         <h2>日本語リクエスト</h2>
-        <label>依頼文
-          <textarea id="requestText" rows="5" placeholder="例: 従業員履歴を memberId=abc123 で取得して"></textarea>
+        <label>やりたいこと
+          <textarea id="requestText" rows="5" placeholder="例: 従業員履歴を memberId=abc123 で取得したい"></textarea>
         </label>
         <div class="actions">
           <button id="resolveButton" class="primary">候補を探す</button>
@@ -54,7 +54,7 @@
       <div>
         <h2>実行エディタ</h2>
         <label>Operation ID
-          <input id="operationId" type="text" placeholder="候補から選択すると自動入力">
+          <input id="operationId" type="text" placeholder="候補選択後に自動入力">
         </label>
         <div class="inline-grid">
           <label>Method
@@ -71,25 +71,26 @@
           <label>Body format
             <select id="bodyFormat">
               <option value="json">json / text</option>
+              <option value="multipart">multipart form-data</option>
               <option value="base64">base64 binary</option>
             </select>
           </label>
         </div>
         <label>Body
-          <textarea id="body" rows="10" placeholder='{"query":"..."}'></textarea>
+          <textarea id="body" rows="12" placeholder='{"query":"..."}'></textarea>
         </label>
       </div>
       <div>
         <h2>変数と追加ヘッダ</h2>
         <label>Variables JSON
-          <textarea id="variables" rows="10" placeholder='{"memberId":"abc123","taskId":"xyz"}'>{}</textarea>
+          <textarea id="variables" rows="10" placeholder='{"memberId":"abc123","attributeId":"..."}'>{}</textarea>
         </label>
         <label>Headers JSON
           <textarea id="headers" rows="8" placeholder='{"X-Custom-Header":"value"}'>{}</textarea>
         </label>
         <div class="actions">
           <button id="executeButton" class="primary">実行</button>
-          <button id="coverageButton">検証プラン作成</button>
+          <button id="coverageButton">検証プラン</button>
         </div>
       </div>
     </section>
@@ -100,7 +101,7 @@
           <h2>実行結果</h2>
           <span id="executeMeta" class="subtle"></span>
         </div>
-        <pre id="responseViewer" class="viewer">未実行です。</pre>
+        <pre id="responseViewer" class="viewer">まだ実行していません。</pre>
       </div>
       <div>
         <div class="section-head">

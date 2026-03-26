@@ -11,35 +11,22 @@ namespace Codex.ApiVerificationWorkbench.Services;
 public sealed class RequestExecutor
 {
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly RequestBodyPlanner _requestBodyPlanner;
 
-    public RequestExecutor(IHttpClientFactory httpClientFactory)
+    public RequestExecutor(IHttpClientFactory httpClientFactory, RequestBodyPlanner requestBodyPlanner)
     {
         _httpClientFactory = httpClientFactory;
+        _requestBodyPlanner = requestBodyPlanner;
     }
 
     public async Task<ExecuteResponse> ExecuteAsync(ExecuteRequestInput input, ResolveRequestResponse resolved)
     {
-        var selectedOperation = resolved.Candidates.FirstOrDefault()?.Operation;
-        if (selectedOperation is not null)
-        {
-            if (!string.IsNullOrWhiteSpace(input.Path) &&
-                !string.Equals(selectedOperation.Path, input.Path, StringComparison.OrdinalIgnoreCase))
-            {
-                selectedOperation = null;
-            }
-
-            if (selectedOperation is not null &&
-                !string.IsNullOrWhiteSpace(input.Method) &&
-                !string.Equals(selectedOperation.Method, input.Method, StringComparison.OrdinalIgnoreCase))
-            {
-                selectedOperation = null;
-            }
-        }
-
+        var selectedOperation = SelectOperation(input, resolved);
         var method = (input.Method ?? selectedOperation?.Method ?? "GET").Trim().ToUpperInvariant();
         var path = (input.Path ?? selectedOperation?.Path ?? string.Empty).Trim();
         var stopwatch = Stopwatch.StartNew();
         Uri? finalUri = null;
+        BodyPlanResponse? plan = null;
 
         try
         {
@@ -50,16 +37,31 @@ public sealed class RequestExecutor
 
             if (!Uri.TryCreate(AppendSlashIfNeeded(input.BaseUrl.Trim()), UriKind.Absolute, out var baseUri))
             {
-                throw new InvalidOperationException("テナント URL の形式が不正です。");
+                throw new InvalidOperationException("テナント URL の形式が正しくありません。");
             }
 
             if (string.IsNullOrWhiteSpace(path))
             {
-                throw new InvalidOperationException("実行する API パスを特定できませんでした。");
+                throw new InvalidOperationException("実行する API パスを指定してください。");
             }
 
             path = ApplyVariables(path, input.Variables);
             finalUri = new Uri(baseUri, path.TrimStart('/'));
+
+            plan = _requestBodyPlanner.BuildPlan(new BodyPlanInput
+            {
+                OperationId = input.OperationId,
+                RequestText = input.RequestText,
+                BaseUrl = input.BaseUrl,
+                Method = method,
+                Path = path,
+                ContentType = input.ContentType,
+                BodyFormat = input.BodyFormat,
+                Body = input.Body,
+                Variables = input.Variables
+            }, selectedOperation);
+
+            var preparedBody = ApplyVariables(plan.Body ?? string.Empty, input.Variables);
 
             using var request = new HttpRequestMessage(new HttpMethod(method), finalUri);
 
@@ -78,11 +80,9 @@ public sealed class RequestExecutor
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
 
-            var contentType = input.ContentType ?? selectedOperation?.SampleContentType ?? "application/json";
-            var body = ApplyVariables(input.Body ?? string.Empty, input.Variables);
-            if (method is "POST" or "PUT" or "PATCH" || !string.IsNullOrWhiteSpace(body))
+            if (plan.ShouldSendBody)
             {
-                request.Content = CreateHttpContent(body, contentType, input.BodyFormat);
+                request.Content = CreateHttpContent(preparedBody, plan.ContentType, plan.BodyFormat);
             }
 
             using var client = _httpClientFactory.CreateClient(nameof(RequestExecutor));
@@ -108,14 +108,42 @@ public sealed class RequestExecutor
                 ResponseHeaders = headers,
                 UsedOperationId = selectedOperation?.Id,
                 UsedOperationSummary = selectedOperation?.Summary,
-                Notes = BuildExecutionNotes(selectedOperation, input)
+                RequestContentType = plan.ContentType,
+                RequestBodyFormat = plan.BodyFormat,
+                RequestBody = preparedBody,
+                BodyRequired = plan.BodyRequired,
+                BodySource = plan.BodySource,
+                Notes = BuildExecutionNotes(selectedOperation, path, preparedBody, plan)
             };
         }
         catch (Exception exception)
         {
             stopwatch.Stop();
-            return BuildErrorResponse(method, finalUri, input, selectedOperation, stopwatch.ElapsedMilliseconds, exception);
+            return BuildErrorResponse(method, finalUri, input, selectedOperation, plan, stopwatch.ElapsedMilliseconds, exception);
         }
+    }
+
+    private static ApiOperation? SelectOperation(ExecuteRequestInput input, ResolveRequestResponse resolved)
+    {
+        var selectedOperation = resolved.Candidates.FirstOrDefault()?.Operation;
+        if (selectedOperation is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(input.Path) &&
+            !string.Equals(selectedOperation.Path, input.Path, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(input.Method) &&
+            !string.Equals(selectedOperation.Method, input.Method, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return selectedOperation;
     }
 
     private static string AppendSlashIfNeeded(string baseUrl)
@@ -127,15 +155,81 @@ public sealed class RequestExecutor
     {
         if (string.Equals(bodyFormat, "base64", StringComparison.OrdinalIgnoreCase))
         {
+            if (ContainsPlaceholder(body))
+            {
+                throw new InvalidOperationException("Base64 body に未置換のプレースホルダがあります。");
+            }
+
             var bytes = Convert.FromBase64String(body.Trim());
             var binaryContent = new ByteArrayContent(bytes);
             binaryContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
             return binaryContent;
         }
 
+        if (string.Equals(bodyFormat, "multipart", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateMultipartContent(body);
+        }
+
         var content = new StringContent(body, Encoding.UTF8);
         content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
         return content;
+    }
+
+    private static HttpContent CreateMultipartContent(string body)
+    {
+        using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+        var multipart = new MultipartFormDataContent();
+
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (TryCreateFilePart(property, out var fileContent, out var fileName))
+            {
+                multipart.Add(fileContent, property.Name, fileName);
+                continue;
+            }
+
+            if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+            {
+                var json = property.Value.GetRawText();
+                multipart.Add(new StringContent(json, Encoding.UTF8, "application/json"), property.Name);
+                continue;
+            }
+
+            multipart.Add(new StringContent(property.Value.ToString(), Encoding.UTF8), property.Name);
+        }
+
+        return multipart;
+    }
+
+    private static bool TryCreateFilePart(JsonProperty property, out ByteArrayContent fileContent, out string fileName)
+    {
+        fileContent = null!;
+        fileName = string.Empty;
+
+        if (property.Value.ValueKind != JsonValueKind.Object ||
+            !property.Value.TryGetProperty("base64", out var base64Property))
+        {
+            return false;
+        }
+
+        var base64 = base64Property.GetString() ?? string.Empty;
+        if (ContainsPlaceholder(base64))
+        {
+            throw new InvalidOperationException($"{property.Name}.base64 に未置換のプレースホルダがあります。");
+        }
+
+        var bytes = Convert.FromBase64String(base64.Trim());
+        fileContent = new ByteArrayContent(bytes);
+        fileName = property.Value.TryGetProperty("fileName", out var fileNameProperty)
+            ? fileNameProperty.GetString() ?? $"{property.Name}.bin"
+            : $"{property.Name}.bin";
+
+        var contentType = property.Value.TryGetProperty("contentType", out var contentTypeProperty)
+            ? contentTypeProperty.GetString()
+            : null;
+        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType);
+        return true;
     }
 
     private static string ApplyVariables(string template, IDictionary<string, string> variables)
@@ -173,7 +267,7 @@ public sealed class RequestExecutor
         }
     }
 
-    private static List<string> BuildExecutionNotes(ApiOperation? operation, ExecuteRequestInput input)
+    private static List<string> BuildExecutionNotes(ApiOperation? operation, string path, string preparedBody, BodyPlanResponse? plan)
     {
         var notes = new List<string>();
 
@@ -182,17 +276,25 @@ public sealed class RequestExecutor
             notes.Add($"Resolved operation: {operation.Summary}");
         }
 
-        if (Regex.IsMatch(input.Path ?? operation?.Path ?? string.Empty, "{[^{}]+}"))
+        if (plan is not null)
         {
-            notes.Add("未置換のパスパラメータが残っていないか確認してください。");
+            notes.AddRange(plan.Notes);
         }
 
-        if (string.Equals(input.BodyFormat, "base64", StringComparison.OrdinalIgnoreCase))
+        if (Regex.IsMatch(path, "{[^{}]+}"))
         {
-            notes.Add("body は Base64 デコード後のバイナリとして送信しました。");
+            notes.Add("Path に未置換のプレースホルダがあります。Variables JSON を確認してください。");
         }
 
-        return notes;
+        if (!string.IsNullOrWhiteSpace(preparedBody) && ContainsPlaceholder(preparedBody))
+        {
+            notes.Add("Body に未置換のプレースホルダがあります。必要なら Variables JSON または body を編集してください。");
+        }
+
+        return notes
+            .Where(note => !string.IsNullOrWhiteSpace(note))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static ExecuteResponse BuildErrorResponse(
@@ -200,12 +302,15 @@ public sealed class RequestExecutor
         Uri? finalUri,
         ExecuteRequestInput input,
         ApiOperation? operation,
+        BodyPlanResponse? plan,
         long elapsedMilliseconds,
         Exception exception)
     {
-        var notes = BuildExecutionNotes(operation, input);
+        var preparedBody = plan is null ? string.Empty : ApplyVariables(plan.Body ?? string.Empty, input.Variables);
+        var resolvedPath = finalUri?.AbsolutePath ?? input.Path ?? operation?.Path ?? string.Empty;
+        var notes = BuildExecutionNotes(operation, resolvedPath, preparedBody, plan);
         var errorType = "unexpected_error";
-        var errorMessage = "予期しないエラーが発生しました。";
+        var errorMessage = "想定外のエラーが発生しました。";
 
         switch (exception)
         {
@@ -213,14 +318,17 @@ public sealed class RequestExecutor
                 errorType = "validation_error";
                 errorMessage = invalidOperationException.Message;
                 break;
-            case FormatException formatException when string.Equals(input.BodyFormat, "base64", StringComparison.OrdinalIgnoreCase):
-                errorType = "invalid_base64";
-                errorMessage = "Base64 body の形式が不正です。";
+            case FormatException formatException:
+                errorType = plan?.BodyFormat.Equals("base64", StringComparison.OrdinalIgnoreCase) == true ||
+                            plan?.BodyFormat.Equals("multipart", StringComparison.OrdinalIgnoreCase) == true
+                    ? "invalid_binary_body"
+                    : "invalid_format";
+                errorMessage = "body の形式が不正です。";
                 notes.Add(formatException.Message);
                 break;
             case TaskCanceledException:
                 errorType = "timeout";
-                errorMessage = "接続または応答がタイムアウトしました。対象テナントへの疎通を確認してください。";
+                errorMessage = "接続または応答がタイムアウトしました。対象テナントへの到達性を確認してください。";
                 break;
             case HttpRequestException httpRequestException:
                 errorType = "network_error";
@@ -232,7 +340,7 @@ public sealed class RequestExecutor
 
         if (finalUri is not null && finalUri.Host.Contains(".int.", StringComparison.OrdinalIgnoreCase))
         {
-            notes.Add("対象ホストは内部向けドメインに見えます。VPN や社内ネットワーク接続が必要な可能性があります。");
+            notes.Add("対象ホストは社内ネットワークや VPN の接続が必要な可能性があります。");
         }
 
         return new ExecuteResponse
@@ -248,6 +356,11 @@ public sealed class RequestExecutor
             UsedOperationSummary = operation?.Summary,
             ErrorType = errorType,
             ErrorMessage = errorMessage,
+            RequestContentType = plan?.ContentType ?? input.ContentType ?? string.Empty,
+            RequestBodyFormat = plan?.BodyFormat ?? input.BodyFormat,
+            RequestBody = preparedBody,
+            BodyRequired = plan?.BodyRequired ?? false,
+            BodySource = plan?.BodySource ?? "none",
             Notes = notes
         };
     }
@@ -266,5 +379,10 @@ public sealed class RequestExecutor
         }
 
         return exception.Message;
+    }
+
+    private static bool ContainsPlaceholder(string value)
+    {
+        return Regex.IsMatch(value, "\\{[A-Za-z0-9_]+\\}");
     }
 }

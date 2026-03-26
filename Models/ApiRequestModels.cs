@@ -39,6 +39,33 @@ public sealed class ExecuteRequestInput
     public Dictionary<string, string> Headers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
+public sealed class BodyPlanInput
+{
+    public string? OperationId { get; set; }
+    public string? RequestText { get; set; }
+    public string BaseUrl { get; set; } = string.Empty;
+    public string? Method { get; set; }
+    public string? Path { get; set; }
+    public string? ContentType { get; set; }
+    public string BodyFormat { get; set; } = "json";
+    public string? Body { get; set; }
+    public Dictionary<string, string> Variables { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class BodyPlanResponse
+{
+    public string Method { get; set; } = string.Empty;
+    public string Path { get; set; } = string.Empty;
+    public string ContentType { get; set; } = string.Empty;
+    public string BodyFormat { get; set; } = "json";
+    public bool BodyRequired { get; set; }
+    public bool ShouldSendBody { get; set; }
+    public bool BodyGenerated { get; set; }
+    public string BodySource { get; set; } = "none";
+    public string Body { get; set; } = string.Empty;
+    public List<string> Notes { get; set; } = [];
+}
+
 public sealed class ExecuteResponse
 {
     public string Method { get; set; } = string.Empty;
@@ -52,6 +79,11 @@ public sealed class ExecuteResponse
     public string? UsedOperationSummary { get; set; }
     public string? ErrorType { get; set; }
     public string? ErrorMessage { get; set; }
+    public string RequestContentType { get; set; } = string.Empty;
+    public string RequestBodyFormat { get; set; } = "json";
+    public string RequestBody { get; set; } = string.Empty;
+    public bool BodyRequired { get; set; }
+    public string BodySource { get; set; } = "none";
     public List<string> Notes { get; set; } = [];
 }
 
