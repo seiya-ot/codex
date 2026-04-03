@@ -10,6 +10,9 @@ const elements = {
   overviewCards: document.getElementById("overviewCards"),
   baseUrl: document.getElementById("baseUrl"),
   accessToken: document.getElementById("accessToken"),
+  proxyUrl: document.getElementById("proxyUrl"),
+  timeoutSeconds: document.getElementById("timeoutSeconds"),
+  proxyMode: document.getElementById("proxyMode"),
   requestText: document.getElementById("requestText"),
   resolveButton: document.getElementById("resolveButton"),
   refreshButton: document.getElementById("refreshButton"),
@@ -193,6 +196,8 @@ function renderExecutionResult(response) {
   const requestMetaLines = [
     response.requestContentType ? `Content-Type: ${response.requestContentType}` : "",
     response.requestBodyFormat ? `Body format: ${response.requestBodyFormat}` : "",
+    response.proxyMode ? `Proxy mode: ${response.proxyMode}` : "",
+    response.proxyUrl ? `Proxy URL: ${response.proxyUrl}` : "",
     response.bodySource && response.bodySource !== "none" ? `Body source: ${response.bodySource}` : "",
   ].filter(Boolean);
 
@@ -304,6 +309,11 @@ function collectBodyPlanPayload() {
 }
 
 function collectExecutePayload() {
+  const timeoutSeconds = Number.parseInt(elements.timeoutSeconds.value, 10);
+  const proxyMode = elements.proxyMode.value || "system";
+  const isProxyDisabled = proxyMode === "disabled";
+  const explicitProxy = proxyMode === "explicit" ? elements.proxyUrl.value.trim() : "";
+
   return {
     operationId: elements.operationId.value || null,
     requestText: elements.requestText.value,
@@ -314,6 +324,10 @@ function collectExecutePayload() {
     contentType: elements.contentType.value || null,
     bodyFormat: elements.bodyFormat.value,
     body: elements.body.value,
+    proxyUrl: explicitProxy || null,
+    bypassSystemProxy: isProxyDisabled,
+    useDefaultProxyCredentials: true,
+    timeoutSeconds: Number.isFinite(timeoutSeconds) ? timeoutSeconds : 30,
     variables: parseJsonField(elements.variables.value, "Variables JSON"),
     headers: parseJsonField(elements.headers.value, "Headers JSON"),
   };
@@ -378,6 +392,9 @@ async function postJson(url, payload) {
 function loadLocalSettings() {
   elements.baseUrl.value = localStorage.getItem("iij.baseUrl") || "";
   elements.accessToken.value = localStorage.getItem("iij.accessToken") || "";
+  elements.proxyUrl.value = localStorage.getItem("iij.proxyUrl") || "";
+  elements.timeoutSeconds.value = localStorage.getItem("iij.timeoutSeconds") || "30";
+  elements.proxyMode.value = localStorage.getItem("iij.proxyMode") || "system";
   elements.variables.value = localStorage.getItem("iij.variables") || "{}";
   elements.headers.value = localStorage.getItem("iij.headers") || "{}";
 }
@@ -385,6 +402,9 @@ function loadLocalSettings() {
 function persistLocalSettings() {
   localStorage.setItem("iij.baseUrl", elements.baseUrl.value);
   localStorage.setItem("iij.accessToken", elements.accessToken.value);
+  localStorage.setItem("iij.proxyUrl", elements.proxyUrl.value);
+  localStorage.setItem("iij.timeoutSeconds", elements.timeoutSeconds.value);
+  localStorage.setItem("iij.proxyMode", elements.proxyMode.value);
   localStorage.setItem("iij.variables", elements.variables.value);
   localStorage.setItem("iij.headers", elements.headers.value);
 }

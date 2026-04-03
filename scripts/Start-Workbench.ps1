@@ -10,7 +10,7 @@ $repoRoot = Split-Path -Parent $scriptDir
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 if ($currentUser -match "CodexSandboxOffline$") {
-    throw "このスクリプトは seiya-ot の対話セッションで実行してください。CodexSandboxOffline で起動すると社内テナントへ接続できません。"
+    throw "Run this script in the seiya-ot interactive session. CodexSandboxOffline cannot reach internal tenants."
 }
 
 Set-Location $repoRoot
