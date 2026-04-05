@@ -29,6 +29,21 @@
         <label>アクセストークン
           <input id="accessToken" type="password" placeholder="Bearer の後ろの値だけを入力">
         </label>
+        <label>Proxy URL (optional)
+          <input id="proxyUrl" type="url" placeholder="http://proxy.example.local:8080">
+        </label>
+        <div class="inline-grid">
+          <label>Timeout (sec)
+            <input id="timeoutSeconds" type="number" min="5" max="180" step="1" value="30">
+          </label>
+          <label>Proxy mode
+            <select id="proxyMode">
+              <option value="system">System proxy</option>
+              <option value="explicit">Use Proxy URL</option>
+              <option value="disabled">Disable proxy</option>
+            </select>
+          </label>
+        </div>
       </div>
       <div>
         <h2>日本語リクエスト</h2>

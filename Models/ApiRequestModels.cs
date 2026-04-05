@@ -35,6 +35,10 @@ public sealed class ExecuteRequestInput
     public string? ContentType { get; set; }
     public string BodyFormat { get; set; } = "json";
     public string? Body { get; set; }
+    public string? ProxyUrl { get; set; }
+    public bool BypassSystemProxy { get; set; }
+    public bool UseDefaultProxyCredentials { get; set; } = true;
+    public int TimeoutSeconds { get; set; } = 30;
     public Dictionary<string, string> Variables { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> Headers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
@@ -84,8 +88,20 @@ public sealed class ExecuteResponse
     public string RequestBody { get; set; } = string.Empty;
     public string RequestDebugText { get; set; } = string.Empty;
     public Dictionary<string, string[]> RequestHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public string ProxyMode { get; set; } = "system";
+    public string? ProxyUrl { get; set; }
     public bool BodyRequired { get; set; }
     public string BodySource { get; set; } = "none";
+    public List<string> Notes { get; set; } = [];
+    public SuccessExampleResponse? SuccessExample { get; set; }
+}
+
+public sealed class SuccessExampleResponse
+{
+    public int StatusCode { get; set; } = 200;
+    public string ContentType { get; set; } = "application/json";
+    public string Body { get; set; } = string.Empty;
+    public string Source { get; set; } = "manual_schema";
     public List<string> Notes { get; set; } = [];
 }
 

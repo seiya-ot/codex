@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
@@ -10,13 +11,15 @@ namespace Codex.ApiVerificationWorkbench.Services;
 
 public sealed class RequestExecutor
 {
-    private readonly IHttpClientFactory _httpClientFactory;
     private readonly RequestBodyPlanner _requestBodyPlanner;
+    private readonly SuccessExamplePlanner _successExamplePlanner;
 
-    public RequestExecutor(IHttpClientFactory httpClientFactory, RequestBodyPlanner requestBodyPlanner)
+    public RequestExecutor(
+        RequestBodyPlanner requestBodyPlanner,
+        SuccessExamplePlanner successExamplePlanner)
     {
-        _httpClientFactory = httpClientFactory;
         _requestBodyPlanner = requestBodyPlanner;
+        _successExamplePlanner = successExamplePlanner;
     }
 
     public async Task<ExecuteResponse> ExecuteAsync(ExecuteRequestInput input, ResolveRequestResponse resolved)
@@ -27,6 +30,10 @@ public sealed class RequestExecutor
         var stopwatch = Stopwatch.StartNew();
         Uri? finalUri = null;
         BodyPlanResponse? plan = null;
+        SuccessExampleResponse? successExample = null;
+        var runtimeNotes = new List<string>();
+        var proxyMode = "system";
+        string? effectiveProxyUrl = null;
 
         try
         {
@@ -42,11 +49,12 @@ public sealed class RequestExecutor
 
             if (string.IsNullOrWhiteSpace(path))
             {
-                throw new InvalidOperationException("実行する API パスを指定してください。");
+                throw new InvalidOperationException("実行する API パスを入力してください。");
             }
 
             path = ApplyVariables(path, input.Variables);
             finalUri = new Uri(baseUri, path.TrimStart('/'));
+            successExample = _successExamplePlanner.Build(selectedOperation, method, finalUri);
 
             plan = _requestBodyPlanner.BuildPlan(new BodyPlanInput
             {
@@ -64,7 +72,6 @@ public sealed class RequestExecutor
             var preparedBody = ApplyVariables(plan.Body ?? string.Empty, input.Variables);
 
             using var request = new HttpRequestMessage(new HttpMethod(method), finalUri);
-
             if (!string.IsNullOrWhiteSpace(input.AccessToken))
             {
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", input.AccessToken.Trim());
@@ -88,14 +95,14 @@ public sealed class RequestExecutor
             var requestHeaders = BuildHeadersSnapshot(request);
             var requestDebugText = BuildRequestDebugText(method, finalUri, requestHeaders, preparedBody, plan);
 
-            using var client = _httpClientFactory.CreateClient(nameof(RequestExecutor));
-            client.Timeout = TimeSpan.FromSeconds(30);
+            using var client = CreateHttpClient(input, out proxyMode, out effectiveProxyUrl, out var clientNotes);
+            runtimeNotes.AddRange(clientNotes);
 
             using var response = await client.SendAsync(request);
             stopwatch.Stop();
 
             var responseBody = await response.Content.ReadAsStringAsync();
-            var headers = response.Headers
+            var responseHeaders = response.Headers
                 .Concat(response.Content.Headers)
                 .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.SelectMany(value => value.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
@@ -108,23 +115,39 @@ public sealed class RequestExecutor
                 IsSuccessStatusCode = response.IsSuccessStatusCode,
                 ElapsedMilliseconds = stopwatch.ElapsedMilliseconds,
                 ResponseBody = FormatResponseBody(responseBody),
-                ResponseHeaders = headers,
+                ResponseHeaders = responseHeaders,
                 UsedOperationId = selectedOperation?.Id,
                 UsedOperationSummary = selectedOperation?.Summary,
+                ErrorType = null,
+                ErrorMessage = null,
                 RequestContentType = plan.ContentType,
                 RequestBodyFormat = plan.BodyFormat,
                 RequestBody = preparedBody,
                 RequestDebugText = requestDebugText,
                 RequestHeaders = requestHeaders,
+                ProxyMode = proxyMode,
+                ProxyUrl = effectiveProxyUrl,
                 BodyRequired = plan.BodyRequired,
                 BodySource = plan.BodySource,
-                Notes = BuildExecutionNotes(selectedOperation, path, preparedBody, plan)
+                Notes = MergeNotes(BuildExecutionNotes(selectedOperation, path, preparedBody, plan), runtimeNotes),
+                SuccessExample = successExample
             };
         }
         catch (Exception exception)
         {
             stopwatch.Stop();
-            return BuildErrorResponse(method, finalUri, input, selectedOperation, plan, stopwatch.ElapsedMilliseconds, exception);
+            return BuildErrorResponse(
+                method,
+                finalUri,
+                input,
+                selectedOperation,
+                plan,
+                successExample,
+                runtimeNotes,
+                proxyMode,
+                effectiveProxyUrl,
+                stopwatch.ElapsedMilliseconds,
+                exception);
         }
     }
 
@@ -156,19 +179,75 @@ public sealed class RequestExecutor
         return baseUrl.EndsWith('/') ? baseUrl : baseUrl + "/";
     }
 
+    private static HttpClient CreateHttpClient(
+        ExecuteRequestInput input,
+        out string proxyMode,
+        out string? effectiveProxyUrl,
+        out List<string> notes)
+    {
+        notes = [];
+        proxyMode = "system";
+        effectiveProxyUrl = null;
+
+        var timeoutSeconds = Math.Clamp(input.TimeoutSeconds <= 0 ? 30 : input.TimeoutSeconds, 5, 180);
+        var handler = new SocketsHttpHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+        };
+
+        if (input.BypassSystemProxy)
+        {
+            handler.UseProxy = false;
+            proxyMode = "disabled";
+            notes.Add("Proxy disabled for this request.");
+        }
+        else if (!string.IsNullOrWhiteSpace(input.ProxyUrl))
+        {
+            if (!Uri.TryCreate(input.ProxyUrl.Trim(), UriKind.Absolute, out var proxyUri))
+            {
+                throw new InvalidOperationException("Proxy URL の形式が正しくありません。");
+            }
+
+            var proxy = new WebProxy(proxyUri);
+            if (input.UseDefaultProxyCredentials)
+            {
+                proxy.Credentials = CredentialCache.DefaultCredentials;
+            }
+
+            handler.UseProxy = true;
+            handler.Proxy = proxy;
+            proxyMode = "explicit";
+            effectiveProxyUrl = proxyUri.ToString();
+            notes.Add($"Using explicit proxy: {proxyUri.Host}:{proxyUri.Port}");
+        }
+        else
+        {
+            handler.UseProxy = true;
+            proxyMode = "system";
+            notes.Add("Using system proxy settings.");
+        }
+
+        notes.Add($"HTTP timeout: {timeoutSeconds}s");
+
+        return new HttpClient(handler, disposeHandler: true)
+        {
+            Timeout = TimeSpan.FromSeconds(timeoutSeconds)
+        };
+    }
+
     private static HttpContent CreateHttpContent(string body, string contentType, string bodyFormat)
     {
         if (string.Equals(bodyFormat, "base64", StringComparison.OrdinalIgnoreCase))
         {
             if (ContainsPlaceholder(body))
             {
-                throw new InvalidOperationException("Base64 body に未置換のプレースホルダがあります。");
+                throw new InvalidOperationException("Base64 body に未設定プレースホルダが残っています。");
             }
 
             var bytes = Convert.FromBase64String(body.Trim());
-            var binaryContent = new ByteArrayContent(bytes);
-            binaryContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
-            return binaryContent;
+            var content = new ByteArrayContent(bytes);
+            content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            return content;
         }
 
         if (string.Equals(bodyFormat, "multipart", StringComparison.OrdinalIgnoreCase))
@@ -176,9 +255,9 @@ public sealed class RequestExecutor
             return CreateMultipartContent(body);
         }
 
-        var content = new StringContent(body, Encoding.UTF8);
-        content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
-        return content;
+        var text = new StringContent(body, Encoding.UTF8);
+        text.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+        return text;
     }
 
     private static HttpContent CreateMultipartContent(string body)
@@ -222,7 +301,7 @@ public sealed class RequestExecutor
         var base64 = base64Property.GetString() ?? string.Empty;
         if (ContainsPlaceholder(base64))
         {
-            throw new InvalidOperationException($"{property.Name}.base64 に未置換のプレースホルダがあります。");
+            throw new InvalidOperationException($"{property.Name}.base64 に未設定プレースホルダが残っています。");
         }
 
         var bytes = Convert.FromBase64String(base64.Trim());
@@ -278,7 +357,7 @@ public sealed class RequestExecutor
         var contentHeaders = request.Content?.Headers ?? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>();
         return request.Headers
             .Concat(contentHeaders)
-            .Append(new KeyValuePair<string, IEnumerable<string>>("Host", [request.RequestUri?.Authority ?? string.Empty]))
+            .Append(new KeyValuePair<string, IEnumerable<string>>("Host", new[] { request.RequestUri?.Authority ?? string.Empty }))
             .GroupBy(header => header.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.SelectMany(value => value.Value).ToArray(), StringComparer.OrdinalIgnoreCase);
     }
@@ -405,12 +484,12 @@ public sealed class RequestExecutor
 
         if (Regex.IsMatch(path, "{[^{}]+}"))
         {
-            notes.Add("Path に未置換のプレースホルダがあります。Variables JSON を確認してください。");
+            notes.Add("Path contains unresolved placeholders. Provide values in Variables JSON.");
         }
 
         if (!string.IsNullOrWhiteSpace(preparedBody) && ContainsPlaceholder(preparedBody))
         {
-            notes.Add("Body に未置換のプレースホルダがあります。必要なら Variables JSON または body を編集してください。");
+            notes.Add("Body contains unresolved placeholders. Provide values in Variables JSON or edit Body.");
         }
 
         return notes
@@ -425,14 +504,18 @@ public sealed class RequestExecutor
         ExecuteRequestInput input,
         ApiOperation? operation,
         BodyPlanResponse? plan,
+        SuccessExampleResponse? successExample,
+        IReadOnlyCollection<string> runtimeNotes,
+        string proxyMode,
+        string? effectiveProxyUrl,
         long elapsedMilliseconds,
         Exception exception)
     {
         var preparedBody = plan is null ? string.Empty : ApplyVariables(plan.Body ?? string.Empty, input.Variables);
         var resolvedPath = finalUri?.AbsolutePath ?? input.Path ?? operation?.Path ?? string.Empty;
-        var notes = BuildExecutionNotes(operation, resolvedPath, preparedBody, plan);
+        var notes = MergeNotes(BuildExecutionNotes(operation, resolvedPath, preparedBody, plan), runtimeNotes);
         var errorType = "unexpected_error";
-        var errorMessage = "想定外のエラーが発生しました。";
+        var errorMessage = "An unexpected error occurred.";
 
         switch (exception)
         {
@@ -445,12 +528,12 @@ public sealed class RequestExecutor
                             plan?.BodyFormat.Equals("multipart", StringComparison.OrdinalIgnoreCase) == true
                     ? "invalid_binary_body"
                     : "invalid_format";
-                errorMessage = "body の形式が不正です。";
+                errorMessage = "Request body format is invalid.";
                 notes.Add(formatException.Message);
                 break;
             case TaskCanceledException:
                 errorType = "timeout";
-                errorMessage = "接続または応答がタイムアウトしました。対象テナントへの到達性を確認してください。";
+                errorMessage = $"接続先 {(finalUri?.Host ?? "unknown host")} への接続がタイムアウトしました。";
                 break;
             case HttpRequestException httpRequestException:
                 errorType = "network_error";
@@ -462,7 +545,13 @@ public sealed class RequestExecutor
 
         if (finalUri is not null && finalUri.Host.Contains(".int.", StringComparison.OrdinalIgnoreCase))
         {
-            notes.Add("対象ホストは社内ネットワークや VPN の接続が必要な可能性があります。");
+            notes.Add("Internal hosts may require corporate network, VPN, or proxy configuration.");
+        }
+
+        if (string.Equals(errorType, "timeout", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(proxyMode, "system", StringComparison.OrdinalIgnoreCase))
+        {
+            notes.Add("If your network requires a proxy, set Proxy URL in request settings.");
         }
 
         return new ExecuteResponse
@@ -483,9 +572,12 @@ public sealed class RequestExecutor
             RequestBody = preparedBody,
             RequestDebugText = BuildFallbackRequestDebugText(method, finalUri, input, preparedBody, plan),
             RequestHeaders = BuildFallbackRequestHeaders(finalUri, input, plan),
+            ProxyMode = proxyMode,
+            ProxyUrl = effectiveProxyUrl,
             BodyRequired = plan?.BodyRequired ?? false,
             BodySource = plan?.BodySource ?? "none",
-            Notes = notes
+            Notes = notes,
+            SuccessExample = successExample
         };
     }
 
@@ -496,12 +588,12 @@ public sealed class RequestExecutor
     {
         var headers = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Host"] = [finalUri?.Authority ?? string.Empty]
+            ["Host"] = new List<string> { finalUri?.Authority ?? string.Empty }
         };
 
         if (!string.IsNullOrWhiteSpace(input.AccessToken))
         {
-            headers["Authorization"] = [$"Bearer {input.AccessToken.Trim()}"];
+            headers["Authorization"] = new List<string> { $"Bearer {input.AccessToken.Trim()}" };
         }
 
         foreach (var header in input.Headers)
@@ -511,16 +603,16 @@ public sealed class RequestExecutor
                 continue;
             }
 
-            headers[header.Key] = [header.Value];
+            headers[header.Key] = new List<string> { header.Value };
         }
 
         if (!string.IsNullOrWhiteSpace(plan?.ContentType) && plan.ShouldSendBody)
         {
-            headers["Content-Type"] = [plan.ContentType];
+            headers["Content-Type"] = new List<string> { plan.ContentType };
         }
         else if (!string.IsNullOrWhiteSpace(input.ContentType))
         {
-            headers["Content-Type"] = [input.ContentType];
+            headers["Content-Type"] = new List<string> { input.ContentType };
         }
 
         return headers.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
@@ -544,14 +636,23 @@ public sealed class RequestExecutor
         {
             return socketException.SocketErrorCode switch
             {
-                SocketError.TimedOut => $"接続先 {finalUri?.Host ?? "unknown host"} への接続がタイムアウトしました。",
-                SocketError.HostNotFound => $"接続先 {finalUri?.Host ?? "unknown host"} の名前解決に失敗しました。",
-                SocketError.ConnectionRefused => $"接続先 {finalUri?.Host ?? "unknown host"} が接続を拒否しました。",
-                _ => $"接続先 {finalUri?.Host ?? "unknown host"} への接続に失敗しました。"
+                SocketError.TimedOut => $"接続先 {(finalUri?.Host ?? "unknown host")} への接続がタイムアウトしました。",
+                SocketError.HostNotFound => $"接続先 {(finalUri?.Host ?? "unknown host")} の名前解決に失敗しました。",
+                SocketError.ConnectionRefused => $"接続先 {(finalUri?.Host ?? "unknown host")} が接続を拒否しました。",
+                _ => $"接続先 {(finalUri?.Host ?? "unknown host")} への接続に失敗しました。"
             };
         }
 
         return exception.Message;
+    }
+
+    private static List<string> MergeNotes(IEnumerable<string> baseNotes, IEnumerable<string> runtimeNotes)
+    {
+        return baseNotes
+            .Concat(runtimeNotes)
+            .Where(note => !string.IsNullOrWhiteSpace(note))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static bool ContainsPlaceholder(string value)

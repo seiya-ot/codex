@@ -22,28 +22,45 @@ IIJ IDガバナンス管理サービスと YESOD API マニュアルを巡回し
 
 ## 起動
 
-PowerShell:
+社内テナントへ接続する場合は、CodexSandboxOffline ではなく `seiya-ot` の対話セッションで起動してください。  
+このリポジトリでは `dotnet run` の代わりに、ユーザーセッション用ビルド出力 `.user-session-build` を使う起動スクリプトを用意しています。
 
-```powershell
-$env:DOTNET_CLI_HOME="$PWD/.dotnet-home"
-$env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1'
-$env:DOTNET_CLI_TELEMETRY_OPTOUT='1'
-$env:NUGET_PACKAGES="$PWD/.nuget/packages"
-$env:APPDATA="$PWD/.appdata"
-dotnet run
+Explorer から実行する場合:
+
+```text
+scripts\Start-Workbench.cmd
 ```
 
-ブラウザで `http://localhost:5000` または表示された URL を開いてください。
+PowerShell から実行する場合:
+
+```powershell
+.\scripts\Start-Workbench.ps1
+```
+
+既定では `http://127.0.0.1:5205` で起動します。別ポートにしたい場合は次のように実行します。
+
+```powershell
+.\scripts\Start-Workbench.ps1 -Url http://127.0.0.1:5300
+```
+
+この方式にしている理由:
+
+- `seiya-ot` セッションの proxy / VPN / 社内ネットワーク設定をそのまま引き継げる
+- `CodexSandboxOffline` で起動したバックエンドから社内テナントへ接続できない問題を避けられる
+- `.user-session-build` に出力するため、`bin/Debug` のロック競合を避けられる
 
 ## マニュアル再読込
 
+Explorer:
+
+```text
+scripts\Refresh-Manuals.cmd
+```
+
+PowerShell:
+
 ```powershell
-$env:DOTNET_CLI_HOME="$PWD/.dotnet-home"
-$env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1'
-$env:DOTNET_CLI_TELEMETRY_OPTOUT='1'
-$env:NUGET_PACKAGES="$PWD/.nuget/packages"
-$env:APPDATA="$PWD/.appdata"
-dotnet run -- --refresh-manuals
+.\scripts\Start-Workbench.ps1 -RefreshManuals
 ```
 
 ## 補足
