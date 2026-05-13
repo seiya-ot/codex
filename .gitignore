@@ -3,3 +3,4 @@ obj/
 .dotnet-home/
 .nuget/
 .appdata/
+.user-session-build/
