@@ -57,8 +57,9 @@ public sealed class RequestResolver
         var queryTerms = ExtractQueryTerms(queryText);
         var candidates = new List<ResolvedCandidate>();
 
-        foreach (var operation in catalog.ApiOperations)
+        foreach (var sourceOperation in catalog.ApiOperations)
         {
+            var operation = EnsureOptionalQueryParameters(sourceOperation);
             var score = 0;
             var reasons = new List<string>();
 
@@ -124,6 +125,11 @@ public sealed class RequestResolver
             if (score <= 0)
             {
                 continue;
+            }
+
+            if (operation.OptionalQueryParameters.Count > 0)
+            {
+                reasons.Add($"Optional query parameters: {string.Join(", ", operation.OptionalQueryParameters.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase))}");
             }
 
             candidates.Add(new ResolvedCandidate
@@ -219,6 +225,40 @@ public sealed class RequestResolver
             .Where(term => term.Length >= 2)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static ApiOperation EnsureOptionalQueryParameters(ApiOperation operation)
+    {
+        if (operation.OptionalQueryParameters.Count > 0)
+        {
+            return operation;
+        }
+
+        var inferred = InferOptionalQueryParameters(operation.Method, operation.Path);
+        if (inferred.Count == 0)
+        {
+            return operation;
+        }
+
+        operation.OptionalQueryParameters = inferred;
+        return operation;
+    }
+
+    private static Dictionary<string, string> InferOptionalQueryParameters(string method, string path)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+        {
+            return values;
+        }
+
+        if (string.Equals(path, "/api/v24.10/memberAssets", StringComparison.OrdinalIgnoreCase))
+        {
+            values["assetId"] = "{assetId}";
+            values["date"] = "{date}";
+        }
+
+        return values;
     }
 
     private static void AddDerivedTerm(ICollection<string> terms, string source, string needle)

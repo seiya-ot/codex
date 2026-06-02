@@ -34,7 +34,7 @@
         </label>
         <div class="inline-grid">
           <label>Timeout (sec)
-            <input id="timeoutSeconds" type="number" min="5" max="180" step="1" value="30">
+            <input id="timeoutSeconds" type="number" min="5" max="1800" step="1" value="30">
           </label>
           <label>Proxy mode
             <select id="proxyMode">
@@ -79,6 +79,9 @@
             <input id="path" type="text" placeholder="/api/v22.10/query">
           </label>
         </div>
+        <label>Query params JSON (optional)
+          <textarea id="queryParameters" rows="4" placeholder='{"assetId":"...","limit":"100"}'>{}</textarea>
+        </label>
         <div class="inline-grid">
           <label>Content-Type
             <input id="contentType" type="text" placeholder="application/json">
@@ -94,6 +97,9 @@
         <label>Body
           <textarea id="body" rows="12" placeholder='{"query":"..."}'></textarea>
         </label>
+        <div class="actions">
+          <button id="generateBodyButton">Body 自動生成</button>
+        </div>
       </div>
       <div>
         <h2>変数と追加ヘッダ</h2>
@@ -114,9 +120,12 @@
       <div>
         <div class="section-head">
           <h2>実行結果</h2>
-          <span id="executeMeta" class="subtle"></span>
+          <div class="actions">
+            <span id="executeMeta" class="subtle"></span>
+            <button id="copyResponseQueryButton" type="button">実行結果をコピー</button>
+          </div>
         </div>
-        <pre id="responseViewer" class="viewer">まだ実行していません。</pre>
+        <pre id="responseViewer" class="viewer" tabindex="0">まだ実行していません。</pre>
       </div>
       <div>
         <div class="section-head">

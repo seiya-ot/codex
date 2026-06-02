@@ -6,10 +6,17 @@ namespace Codex.ApiVerificationWorkbench.Services;
 
 public sealed class RequestBodyPlanner
 {
+    private readonly AttributeIdCatalog _attributeIdCatalog;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true
     };
+
+    public RequestBodyPlanner(AttributeIdCatalog attributeIdCatalog)
+    {
+        _attributeIdCatalog = attributeIdCatalog;
+    }
 
     public BodyPlanResponse BuildPlan(BodyPlanInput input, ApiOperation? operation)
     {
@@ -29,7 +36,7 @@ public sealed class RequestBodyPlanner
                 ShouldSendBody = !string.IsNullOrWhiteSpace(input.Body),
                 BodyGenerated = false,
                 BodySource = string.IsNullOrWhiteSpace(input.Body) ? "none" : "user",
-                Body = input.Body ?? string.Empty,
+                Body = ApplyDefaultAttributeId(input.Body ?? string.Empty, input.RequestText, input.Variables, notes),
                 Notes = ["Path が未指定のため、body の自動判定を行いませんでした。"]
             };
         }
@@ -65,7 +72,7 @@ public sealed class RequestBodyPlanner
                 ShouldSendBody = true,
                 BodyGenerated = false,
                 BodySource = "user",
-                Body = input.Body ?? string.Empty,
+                Body = ApplyDefaultAttributeId(input.Body ?? string.Empty, input.RequestText, input.Variables, notes),
                 Notes = notes
             };
         }
@@ -90,6 +97,8 @@ public sealed class RequestBodyPlanner
         }
 
         var body = template.BodyFactory();
+        body = ApplyVariables(body, input.Variables);
+        body = ApplyDefaultAttributeId(body, input.RequestText, input.Variables, notes);
         notes.AddRange(template.Notes);
         notes.Add("必須項目を含むテンプレート body を自動生成しました。必要に応じて置換してください。");
 
@@ -106,6 +115,134 @@ public sealed class RequestBodyPlanner
             Body = body,
             Notes = notes
         };
+    }
+
+    private string ApplyDefaultAttributeId(
+        string body,
+        string? requestText,
+        IReadOnlyDictionary<string, string> variables,
+        ICollection<string> notes)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return body;
+        }
+
+        var hasAttributeIdPlaceholder = ContainsPlaceholder(body, "attributeId");
+        var hasAttributeIdJsonField = body.Contains("\"attributeId\"", StringComparison.OrdinalIgnoreCase);
+        if (!hasAttributeIdPlaceholder && !hasAttributeIdJsonField)
+        {
+            return body;
+        }
+
+        if (variables.TryGetValue("attributeId", out var attributeId) && !string.IsNullOrWhiteSpace(attributeId))
+        {
+            var normalizedAttributeId = attributeId.Trim();
+            if (_attributeIdCatalog.ContainsAttributeId(normalizedAttributeId))
+            {
+                body = ApplyVariables(body, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["attributeId"] = normalizedAttributeId
+                });
+                if (hasAttributeIdJsonField)
+                {
+                    body = EnsureJsonAttributeIdFromCsv(body, normalizedAttributeId, notes);
+                }
+
+                return body;
+            }
+
+            notes.Add($"Variables attributeId is not found in iga_assetId.csv. fallback to csv value: {normalizedAttributeId}");
+        }
+
+        var inferred = _attributeIdCatalog.InferFromRequestText(requestText);
+        if (inferred is not null)
+        {
+            notes.Add($"attributeId inferred from request text: {inferred.AttributeName} -> {inferred.AttributeId}");
+            body = ApplyVariables(body, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["attributeId"] = inferred.AttributeId
+            });
+            if (hasAttributeIdJsonField)
+            {
+                body = EnsureJsonAttributeIdFromCsv(body, inferred.AttributeId, notes);
+            }
+
+            return body;
+        }
+
+        var defaultAttributeId = _attributeIdCatalog.GetDefaultAttributeId();
+        if (string.IsNullOrWhiteSpace(defaultAttributeId))
+        {
+            return body;
+        }
+
+        notes.Add($"attributeId を iga_assetId.csv から自動補完しました: {defaultAttributeId}");
+        body = ApplyVariables(body, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["attributeId"] = defaultAttributeId
+        });
+        if (hasAttributeIdJsonField)
+        {
+            body = EnsureJsonAttributeIdFromCsv(body, defaultAttributeId, notes);
+        }
+
+        return body;
+    }
+
+    private string EnsureJsonAttributeIdFromCsv(string body, string csvAttributeId, ICollection<string> notes)
+    {
+        var replacedAny = false;
+        var changedAny = false;
+
+        var replaced = Regex.Replace(
+            body,
+            "\"attributeId\"\\s*:\\s*\"(?<value>[^\"]*)\"",
+            match =>
+            {
+                replacedAny = true;
+                var current = match.Groups["value"].Value;
+                var isPlaceholder = current.Contains("{attributeId}", StringComparison.OrdinalIgnoreCase) ||
+                                    current.Contains("<attributeId>", StringComparison.OrdinalIgnoreCase);
+                if (string.IsNullOrWhiteSpace(current) || isPlaceholder || !_attributeIdCatalog.ContainsAttributeId(current))
+                {
+                    changedAny = true;
+                    return match.Value.Replace(current, csvAttributeId, StringComparison.Ordinal);
+                }
+
+                return match.Value;
+            },
+            RegexOptions.IgnoreCase);
+
+        if (replacedAny && changedAny)
+        {
+            notes.Add($"request body attributeId replaced by csv value: {csvAttributeId}");
+        }
+
+        return replaced;
+    }
+
+    private static bool ContainsPlaceholder(string template, string variableName)
+    {
+        return template.Contains("{" + variableName + "}", StringComparison.OrdinalIgnoreCase) ||
+               template.Contains("<" + variableName + ">", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ApplyVariables(string template, IReadOnlyDictionary<string, string> variables)
+    {
+        if (string.IsNullOrWhiteSpace(template) || variables.Count == 0)
+        {
+            return template;
+        }
+
+        var result = template;
+        foreach (var pair in variables.Where(pair => !string.IsNullOrWhiteSpace(pair.Value)))
+        {
+            result = result.Replace("{" + pair.Key + "}", pair.Value, StringComparison.OrdinalIgnoreCase);
+            result = result.Replace("<" + pair.Key + ">", pair.Value, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return result;
     }
 
     private static BodyTemplate DetermineTemplate(string method, string path, string tenantProfile)
