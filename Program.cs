@@ -12,6 +12,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<ManualCatalogStore>();
 builder.Services.AddSingleton<RequestResolver>();
+builder.Services.AddSingleton<AttributeIdCatalog>();
 builder.Services.AddSingleton<RequestBodyPlanner>();
 builder.Services.AddSingleton<SuccessExamplePlanner>();
 builder.Services.AddSingleton<RequestExecutor>();

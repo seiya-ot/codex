@@ -40,6 +40,7 @@ public sealed class ExecuteRequestInput
     public bool UseDefaultProxyCredentials { get; set; } = true;
     public int TimeoutSeconds { get; set; } = 30;
     public Dictionary<string, string> Variables { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> QueryParameters { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> Headers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
@@ -88,6 +89,9 @@ public sealed class ExecuteResponse
     public string RequestBody { get; set; } = string.Empty;
     public string RequestDebugText { get; set; } = string.Empty;
     public Dictionary<string, string[]> RequestHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> RequestQueryParameters { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> RequestVariables { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> RequestCustomHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string ProxyMode { get; set; } = "system";
     public string? ProxyUrl { get; set; }
     public bool BodyRequired { get; set; }
