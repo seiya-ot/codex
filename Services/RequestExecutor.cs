@@ -9,7 +9,7 @@ using Codex.ApiVerificationWorkbench.Models;
 
 namespace Codex.ApiVerificationWorkbench.Services;
 
-public sealed class RequestExecutor
+public sealed partial class RequestExecutor
 {
     private readonly RequestBodyPlanner _requestBodyPlanner;
     private readonly SuccessExamplePlanner _successExamplePlanner;
@@ -464,7 +464,7 @@ public sealed class RequestExecutor
             return null;
         }
 
-        var match = Regex.Match(contentType, "boundary=(?:\"(?<boundary>[^\"]+)\"|(?<boundary>[^;]+))", RegexOptions.IgnoreCase);
+        var match = BoundaryRegex().Match(contentType);
         return match.Success ? match.Groups["boundary"].Value : null;
     }
 
@@ -482,7 +482,7 @@ public sealed class RequestExecutor
             notes.AddRange(plan.Notes);
         }
 
-        if (Regex.IsMatch(path, "{[^{}]+}"))
+        if (UnresolvedPathPlaceholderRegex().IsMatch(path))
         {
             notes.Add("Path contains unresolved placeholders. Provide values in Variables JSON.");
         }
@@ -657,6 +657,15 @@ public sealed class RequestExecutor
 
     private static bool ContainsPlaceholder(string value)
     {
-        return Regex.IsMatch(value, "\\{[A-Za-z0-9_]+\\}");
+        return PlaceholderRegex().IsMatch(value);
     }
+
+    [GeneratedRegex("boundary=(?:\"(?<boundary>[^\"]+)\"|(?<boundary>[^;]+))", RegexOptions.IgnoreCase)]
+    private static partial Regex BoundaryRegex();
+
+    [GeneratedRegex("\\{[^{}]+\\}")]
+    private static partial Regex UnresolvedPathPlaceholderRegex();
+
+    [GeneratedRegex("\\{[A-Za-z0-9_]+\\}")]
+    private static partial Regex PlaceholderRegex();
 }

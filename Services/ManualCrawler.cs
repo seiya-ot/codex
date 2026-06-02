@@ -8,10 +8,12 @@ namespace Codex.ApiVerificationWorkbench.Services;
 public sealed partial class ManualCrawler
 {
     private readonly HttpClient _httpClient;
+    private readonly ILogger<ManualCrawler> _logger;
 
-    public ManualCrawler(HttpClient httpClient)
+    public ManualCrawler(HttpClient httpClient, ILogger<ManualCrawler> logger)
     {
         _httpClient = httpClient;
+        _logger = logger;
         _httpClient.Timeout = TimeSpan.FromSeconds(60);
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("CodexApiVerificationWorkbench/1.0");
     }
@@ -34,9 +36,20 @@ public sealed partial class ManualCrawler
                     fetchedPages.AddRange(await CrawlRootAsync(root, cancellationToken));
                 }
             }
-            catch when (string.Equals(root.Id, "yesod-api-reference", StringComparison.OrdinalIgnoreCase))
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                _logger.LogInformation("Manual crawl was canceled while fetching {ManualId}.", root.Id);
+                throw;
+            }
+            catch (Exception exception) when (string.Equals(root.Id, "yesod-api-reference", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(exception, "Failed to fetch {ManualId}. Using fallback YESOD API catalog data.", root.Id);
                 fetchedPages.Add(BuildFallbackYesodPage(root));
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Failed to fetch {ManualId} from {RootUrl}.", root.Id, root.RootUrl);
+                throw;
             }
         }
 
@@ -82,7 +95,7 @@ public sealed partial class ManualCrawler
 
     public static string NormalizeForSearch(string value)
     {
-        return Regex.Replace(value.ToLowerInvariant(), "[\\s　_\\-/:.()\\[\\]{}]+", string.Empty);
+        return SearchSeparatorsRegex().Replace(value.ToLowerInvariant(), string.Empty);
     }
 
     private async Task<List<FetchedPage>> CrawlRootAsync(ManualRoot root, CancellationToken cancellationToken)
@@ -167,7 +180,7 @@ public sealed partial class ManualCrawler
     private static Encoding? DetectEncodingFromMeta(byte[] bytes)
     {
         var utf8 = Encoding.UTF8.GetString(bytes);
-        var match = Regex.Match(utf8, "<meta[^>]+charset=\"?(?<charset>[A-Za-z0-9_\\-]+)\"?", RegexOptions.IgnoreCase);
+        var match = CharsetRegex().Match(utf8);
         return match.Success ? TryGetEncoding(match.Groups["charset"].Value) : null;
     }
 
@@ -336,7 +349,7 @@ public sealed partial class ManualCrawler
 
     private static string ExtractTitle(string html)
     {
-        var match = Regex.Match(html, "<title>(?<title>.*?)</title>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        var match = TitleRegex().Match(html);
         return match.Success ? CleanupText(match.Groups["title"].Value) : "Untitled";
     }
 
@@ -349,7 +362,7 @@ public sealed partial class ManualCrawler
         return text.Length > 12000 ? text[..12000] : text;
     }
 
-    private static string CleanupText(string value) => Regex.Replace(value, "\\s+", " ").Trim();
+    private static string CleanupText(string value) => WhitespaceRegex().Replace(value, " ").Trim();
 
     private static void EnrichAliases(IEnumerable<ApiOperation> operations)
     {
@@ -460,12 +473,12 @@ public sealed partial class ManualCrawler
             .Replace("<taskId>", "{taskId}", StringComparison.OrdinalIgnoreCase)
             .Trim();
 
-        path = Regex.Replace(path, "\\s+", string.Empty);
-        path = Regex.Replace(path, "<[^>]+>", "{id}");
+        path = WhitespaceRegex().Replace(path, string.Empty);
+        path = TagRegex().Replace(path, "{id}");
 
-        if (Regex.IsMatch(path, "^/api/v\\d+\\.\\d+/members/[^/]+/avatar$", RegexOptions.IgnoreCase))
+        if (MemberAvatarPathRegex().IsMatch(path))
         {
-            path = Regex.Replace(path, "/members/[^/]+/avatar", "/members/{memberId}/avatar", RegexOptions.IgnoreCase);
+            path = MemberAvatarSegmentRegex().Replace(path, "/members/{memberId}/avatar");
         }
 
         return path;
@@ -473,7 +486,7 @@ public sealed partial class ManualCrawler
 
     private static string ExtractVersion(string path)
     {
-        var match = Regex.Match(path, "/api/(?<version>v\\d+\\.\\d+)/", RegexOptions.IgnoreCase);
+        var match = VersionRegex().Match(path);
         return match.Success ? match.Groups["version"].Value : string.Empty;
     }
 
@@ -525,7 +538,7 @@ public sealed partial class ManualCrawler
     private static List<ParameterTemplate> ExtractPathParameters(string path)
     {
         var parameters = new List<ParameterTemplate>();
-        foreach (Match match in Regex.Matches(path, "{(?<name>[^{}]+)}"))
+        foreach (Match match in PathParameterRegex().Matches(path))
         {
             parameters.Add(new ParameterTemplate
             {
@@ -627,7 +640,7 @@ public sealed partial class ManualCrawler
 
     private static bool IsQueryEndpoint(string path)
     {
-        return Regex.IsMatch(path, "(?i)(^|/)query($|/)");
+        return QueryEndpointRegex().IsMatch(path);
     }
 
     private static IReadOnlyList<(string method, string path)> GetYesodFallbackOperations()
@@ -688,6 +701,33 @@ public sealed partial class ManualCrawler
 
     [GeneratedRegex("(?<method>GET|POST|PUT|DELETE|PATCH).{0,160}?(?<path>/api/[^\\s\"'<>]+)", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex InlineMethodAndPathRegex();
+
+    [GeneratedRegex("[\\s　_\\-/:.()\\[\\]{}]+")]
+    private static partial Regex SearchSeparatorsRegex();
+
+    [GeneratedRegex("<meta[^>]+charset=\"?(?<charset>[A-Za-z0-9_\\-]+)\"?", RegexOptions.IgnoreCase)]
+    private static partial Regex CharsetRegex();
+
+    [GeneratedRegex("<title>(?<title>.*?)</title>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex TitleRegex();
+
+    [GeneratedRegex("\\s+")]
+    private static partial Regex WhitespaceRegex();
+
+    [GeneratedRegex("^/api/v\\d+\\.\\d+/members/[^/]+/avatar$", RegexOptions.IgnoreCase)]
+    private static partial Regex MemberAvatarPathRegex();
+
+    [GeneratedRegex("/members/[^/]+/avatar", RegexOptions.IgnoreCase)]
+    private static partial Regex MemberAvatarSegmentRegex();
+
+    [GeneratedRegex("/api/(?<version>v\\d+\\.\\d+)/", RegexOptions.IgnoreCase)]
+    private static partial Regex VersionRegex();
+
+    [GeneratedRegex("\\{(?<name>[^{}]+)\\}")]
+    private static partial Regex PathParameterRegex();
+
+    [GeneratedRegex("(^|/)query($|/)", RegexOptions.IgnoreCase)]
+    private static partial Regex QueryEndpointRegex();
 
     private sealed record ManualRoot(string Id, string Name, string RootUrl, bool SinglePage, IReadOnlyList<string> Tags);
     private sealed record FetchedPage(ManualRoot Root, ManualPage Page, string Html);

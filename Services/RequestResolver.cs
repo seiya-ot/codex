@@ -3,7 +3,7 @@ using Codex.ApiVerificationWorkbench.Models;
 
 namespace Codex.ApiVerificationWorkbench.Services;
 
-public sealed class RequestResolver
+public sealed partial class RequestResolver
 {
     private readonly ManualCatalogStore _catalogStore;
 
@@ -60,12 +60,12 @@ public sealed class RequestResolver
         foreach (var operation in catalog.ApiOperations)
         {
             var score = 0;
-            var reasons = new List<string>();
+            var reasons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             if (!string.IsNullOrWhiteSpace(response.MethodHint) &&
                 string.Equals(operation.Method, response.MethodHint, StringComparison.OrdinalIgnoreCase))
             {
-                score += 120;
+                score += ResolverScoring.MethodHintMatch;
                 reasons.Add($"HTTP メソッド {response.MethodHint} が一致しました。");
             }
 
@@ -73,13 +73,13 @@ public sealed class RequestResolver
             {
                 if (string.Equals(operation.Path, response.PathHint, StringComparison.OrdinalIgnoreCase))
                 {
-                    score += 1_000;
+                    score += ResolverScoring.PathExactMatch;
                     reasons.Add("パスが完全一致しました。");
                 }
                 else if (operation.Path.Contains(response.PathHint, StringComparison.OrdinalIgnoreCase) ||
                          response.PathHint.Contains(operation.Path, StringComparison.OrdinalIgnoreCase))
                 {
-                    score += 250;
+                    score += ResolverScoring.PathPartialMatch;
                     reasons.Add("パスの一部が一致しました。");
                 }
             }
@@ -94,12 +94,12 @@ public sealed class RequestResolver
 
                 if (response.NormalizedQuery.Contains(normalizedAlias, StringComparison.OrdinalIgnoreCase))
                 {
-                    score += 180 + normalizedAlias.Length;
+                    score += ResolverScoring.AliasExactMatchBase + normalizedAlias.Length;
                     reasons.Add($"「{alias}」に一致しました。");
                 }
                 else if (normalizedAlias.Contains(response.NormalizedQuery, StringComparison.OrdinalIgnoreCase))
                 {
-                    score += 90;
+                    score += ResolverScoring.AliasContainsQuery;
                     reasons.Add($"候補側の別名「{alias}」が入力を内包しています。");
                 }
             }
@@ -108,7 +108,9 @@ public sealed class RequestResolver
             {
                 if (operation.SearchKeywords.Any(keyword => keyword.Contains(term, StringComparison.OrdinalIgnoreCase)))
                 {
-                    score += Math.Min(220, 40 + (term.Length * 30));
+                    score += Math.Min(
+                        ResolverScoring.QueryTermMatchMax,
+                        ResolverScoring.QueryTermMatchBase + (term.Length * ResolverScoring.QueryTermLengthMultiplier));
                     reasons.Add($"キーワード「{term}」に一致しました。");
                 }
             }
@@ -117,7 +119,7 @@ public sealed class RequestResolver
             var gramHits = grams.Count(gram => searchable.Contains(gram, StringComparison.OrdinalIgnoreCase));
             if (gramHits > 0)
             {
-                score += gramHits * 4;
+                score += gramHits * ResolverScoring.NGramHit;
                 reasons.Add($"検索文字片が {gramHits} 件一致しました。");
             }
 
@@ -130,7 +132,7 @@ public sealed class RequestResolver
             {
                 Operation = operation,
                 Score = score,
-                Reasons = reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                Reasons = reasons.ToList()
             });
         }
 
@@ -146,7 +148,7 @@ public sealed class RequestResolver
     private static string? ParseMethodHint(string? explicitMethod, string? requestText)
     {
         var source = $"{explicitMethod} {requestText}";
-        var match = Regex.Match(source, "\\b(GET|POST|PUT|DELETE|PATCH)\\b", RegexOptions.IgnoreCase);
+        var match = MethodHintRegex().Match(source);
         return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
     }
 
@@ -157,7 +159,7 @@ public sealed class RequestResolver
             return explicitPath.Trim();
         }
 
-        var match = Regex.Match(requestText ?? string.Empty, "/api/[^\\s\"']+", RegexOptions.IgnoreCase);
+        var match = PathHintRegex().Match(requestText ?? string.Empty);
         return match.Success ? match.Value.Trim() : null;
     }
 
@@ -199,7 +201,7 @@ public sealed class RequestResolver
             cleaned = cleaned.Replace(filler, " ", StringComparison.OrdinalIgnoreCase);
         }
 
-        cleaned = Regex.Replace(cleaned, "[=:/{}\"'.,，、。()（）\\[\\]\\s]+", " ");
+        cleaned = QueryTermSeparatorsRegex().Replace(cleaned, " ");
         var terms = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
 
         foreach (var term in terms.ToList())
@@ -234,5 +236,27 @@ public sealed class RequestResolver
         {
             terms.Add(remaining);
         }
+    }
+
+    [GeneratedRegex("\\b(GET|POST|PUT|DELETE|PATCH)\\b", RegexOptions.IgnoreCase)]
+    private static partial Regex MethodHintRegex();
+
+    [GeneratedRegex("/api/[^\\s\"']+", RegexOptions.IgnoreCase)]
+    private static partial Regex PathHintRegex();
+
+    [GeneratedRegex("[=:/{}\"'.,，、。()（）\\[\\]\\s]+")]
+    private static partial Regex QueryTermSeparatorsRegex();
+
+    private static class ResolverScoring
+    {
+        public const int MethodHintMatch = 120;
+        public const int PathExactMatch = 1_000;
+        public const int PathPartialMatch = 250;
+        public const int AliasExactMatchBase = 180;
+        public const int AliasContainsQuery = 90;
+        public const int QueryTermMatchMax = 220;
+        public const int QueryTermMatchBase = 40;
+        public const int QueryTermLengthMultiplier = 30;
+        public const int NGramHit = 4;
     }
 }

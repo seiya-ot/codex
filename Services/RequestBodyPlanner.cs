@@ -4,7 +4,7 @@ using Codex.ApiVerificationWorkbench.Models;
 
 namespace Codex.ApiVerificationWorkbench.Services;
 
-public sealed class RequestBodyPlanner
+public sealed partial class RequestBodyPlanner
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -351,7 +351,7 @@ public sealed class RequestBodyPlanner
 
     private static bool IsQueryEndpoint(string path)
     {
-        return Regex.IsMatch(path, "(?i)(^|/)query($|/)");
+        return QueryEndpointRegex().IsMatch(path);
     }
 
     private static bool IsImportEndpoint(string path)
@@ -415,4 +415,7 @@ public sealed class RequestBodyPlanner
     {
         public List<string> Notes { get; init; } = [];
     }
+
+    [GeneratedRegex("(^|/)query($|/)", RegexOptions.IgnoreCase)]
+    private static partial Regex QueryEndpointRegex();
 }
