@@ -416,6 +416,6 @@ public sealed partial class RequestBodyPlanner
         public List<string> Notes { get; init; } = [];
     }
 
-    [GeneratedRegex("(^|/)query($|/)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex("(^|/)query($|/|\\?)", RegexOptions.IgnoreCase)]
     private static partial Regex QueryEndpointRegex();
 }

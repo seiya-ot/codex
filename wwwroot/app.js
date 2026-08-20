@@ -24,6 +24,34 @@ const elements = {
   contentType: document.getElementById("contentType"),
   bodyFormat: document.getElementById("bodyFormat"),
   body: document.getElementById("body"),
+  queryBuilder: document.getElementById("queryBuilder"),
+  queryBaseDate: document.getElementById("queryBaseDate"),
+  queryEntityType: document.getElementById("queryEntityType"),
+  queryFrom: document.getElementById("queryFrom"),
+  queryTo: document.getElementById("queryTo"),
+  queryType: document.getElementById("queryType"),
+  attributeQueryFields: document.getElementById("attributeQueryFields"),
+  queryAttributeId: document.getElementById("queryAttributeId"),
+  queryComparisonOperator: document.getElementById("queryComparisonOperator"),
+  queryComparisonValue: document.getElementById("queryComparisonValue"),
+  queryReferenceIds: document.getElementById("queryReferenceIds"),
+  queryOnlyLatestData: document.getElementById("queryOnlyLatestData"),
+  logicalQueryFields: document.getElementById("logicalQueryFields"),
+  queryLogicalOperator: document.getElementById("queryLogicalOperator"),
+  queryLogicalConditions: document.getElementById("queryLogicalConditions"),
+  diffQueryFields: document.getElementById("diffQueryFields"),
+  queryDiffAttributeId: document.getElementById("queryDiffAttributeId"),
+  queryIntervalTarget: document.getElementById("queryIntervalTarget"),
+  queryDiffType: document.getElementById("queryDiffType"),
+  queryDiffFromOperator: document.getElementById("queryDiffFromOperator"),
+  queryDiffFromValue: document.getElementById("queryDiffFromValue"),
+  queryDiffToOperator: document.getElementById("queryDiffToOperator"),
+  queryDiffToValue: document.getElementById("queryDiffToValue"),
+  queryAttributeSelector: document.getElementById("queryAttributeSelector"),
+  queryGroupAttributeSelector: document.getElementById("queryGroupAttributeSelector"),
+  applyQueryBuilderButton: document.getElementById("applyQueryBuilderButton"),
+  resetQueryBuilderButton: document.getElementById("resetQueryBuilderButton"),
+  executeQueryButton: document.getElementById("executeQueryButton"),
   variables: document.getElementById("variables"),
   headers: document.getElementById("headers"),
   executeButton: document.getElementById("executeButton"),
@@ -46,6 +74,14 @@ elements.refreshButton.addEventListener("click", refreshManuals);
 elements.requestText.addEventListener("input", handleRequestTextInput);
 elements.requestText.addEventListener("compositionstart", handleRequestTextCompositionStart);
 elements.requestText.addEventListener("compositionend", handleRequestTextCompositionEnd);
+elements.path.addEventListener("input", () => toggleQueryBuilder({ hydrate: false }));
+elements.queryType.addEventListener("change", renderQueryTypeFields);
+elements.applyQueryBuilderButton.addEventListener("click", () => applyQueryBuilder({ updateBody: true }));
+elements.resetQueryBuilderButton.addEventListener("click", resetQueryBuilder);
+elements.executeQueryButton.addEventListener("click", async () => {
+  applyQueryBuilder({ updateBody: true });
+  await executeRequest();
+});
 
 async function bootstrap() {
   loadLocalSettings();
@@ -159,6 +195,7 @@ async function applySelectedOperation(operation) {
   elements.body.value = operation.sampleBody || "";
 
   const plan = await planRequestBody({ overwriteBody: true });
+  toggleQueryBuilder({ hydrate: true });
   elements.responseViewer.textContent =
     `選択済み: ${operation.summary}\n` +
     `${operation.method} ${operation.path}\n\n` +
@@ -167,6 +204,10 @@ async function applySelectedOperation(operation) {
 
 async function executeRequest() {
   persistLocalSettings();
+
+  if (isQueryEndpoint(elements.path.value)) {
+    applyQueryBuilder({ updateBody: true });
+  }
 
   const hadBody = Boolean(elements.body.value.trim());
   const plan = await planRequestBody({ overwriteBody: false });
@@ -191,7 +232,8 @@ function renderExecutionResult(response) {
   const hasSuccessExample = Boolean(response.successExample && response.successExample.body && !response.isSuccessStatusCode);
   elements.executeMeta.textContent =
     `${statusLabel} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms` +
-    (hasSuccessExample ? " / success example available" : "");
+    (hasSuccessExample ? " / success example available" : "") +
+    formatQueryResultMeta(response);
 
   const requestMetaLines = [
     response.requestContentType ? `Content-Type: ${response.requestContentType}` : "",
@@ -229,6 +271,19 @@ function renderExecutionResult(response) {
     `${noteBlock}` +
     `${headersBlock}` +
     `${bodyBlock}`;
+}
+
+function formatQueryResultMeta(response) {
+  if (!isQueryEndpoint(response.finalUrl || elements.path.value) || !response.isSuccessStatusCode) {
+    return "";
+  }
+
+  try {
+    const result = JSON.parse(response.responseBody || "{}");
+    return Array.isArray(result.results) ? ` / ${result.results.length} results` : "";
+  } catch {
+    return "";
+  }
 }
 
 function formatSuccessExample(successExample) {
@@ -362,6 +417,198 @@ function parseJsonField(raw, label) {
     return JSON.parse(raw);
   } catch (error) {
     throw new Error(`${label} の JSON が不正です: ${error.message}`);
+  }
+}
+
+function isQueryEndpoint(path) {
+  return /^\/api\/v\d+\.\d+\/query(?:[/?#]|$)/i.test(String(path).trim()) ||
+    /\/api\/v\d+\.\d+\/query(?:[/?#]|$)/i.test(String(path).trim());
+}
+
+function toggleQueryBuilder({ hydrate }) {
+  const isQuery = isQueryEndpoint(elements.path.value);
+  elements.queryBuilder.hidden = !isQuery;
+  if (!isQuery) {
+    return;
+  }
+
+  renderQueryTypeFields();
+  if (hydrate) {
+    hydrateQueryBuilder();
+  }
+}
+
+function renderQueryTypeFields() {
+  const queryType = elements.queryType.value;
+  elements.attributeQueryFields.hidden = queryType !== "AttributeQuery";
+  elements.logicalQueryFields.hidden = queryType !== "Logical";
+  elements.diffQueryFields.hidden = queryType !== "DiffQuery";
+}
+
+function resetQueryBuilder() {
+  const today = new Date().toISOString().slice(0, 10);
+  elements.queryBaseDate.value = today;
+  elements.queryEntityType.value = "member";
+  elements.queryFrom.value = "";
+  elements.queryTo.value = "";
+  elements.queryType.value = "AttributeQuery";
+  elements.queryAttributeId.value = "";
+  elements.queryComparisonOperator.value = "ISNOTNULL";
+  elements.queryComparisonValue.value = "";
+  elements.queryReferenceIds.value = "";
+  elements.queryOnlyLatestData.checked = false;
+  elements.queryLogicalOperator.value = "AND";
+  elements.queryLogicalConditions.value = "";
+  elements.queryDiffAttributeId.value = "";
+  elements.queryIntervalTarget.value = "TO";
+  elements.queryDiffType.value = "IN";
+  elements.queryDiffFromOperator.value = "ISNULL";
+  elements.queryDiffFromValue.value = "";
+  elements.queryDiffToOperator.value = "ISNOTNULL";
+  elements.queryDiffToValue.value = "";
+  elements.queryAttributeSelector.value = "";
+  elements.queryGroupAttributeSelector.value = "";
+  renderQueryTypeFields();
+}
+
+function hydrateQueryBuilder() {
+  resetQueryBuilder();
+  const [pathOnly, queryString = ""] = elements.path.value.split("?", 2);
+  const parameters = new URLSearchParams(queryString);
+  elements.path.value = pathOnly;
+  elements.queryBaseDate.value = parameters.get("baseDate") || elements.queryBaseDate.value;
+  elements.queryEntityType.value = parameters.get("entityType") || "member";
+  elements.queryFrom.value = parameters.get("from") || "";
+  elements.queryTo.value = parameters.get("to") || "";
+
+  if (!elements.body.value.trim()) {
+    return;
+  }
+
+  try {
+    const body = JSON.parse(elements.body.value);
+    elements.queryAttributeSelector.value = toLines(body.attributeSelector);
+    elements.queryGroupAttributeSelector.value = toLines(body.groupAttributeSelector);
+    hydrateQueryObject(body.query);
+  } catch {
+    // 手入力中の JSON は壊れている可能性があるため、フォーム初期値を維持する。
+  }
+}
+
+function hydrateQueryObject(query) {
+  if (!query || typeof query !== "object") {
+    return;
+  }
+
+  elements.queryType.value = query.type || "AttributeQuery";
+  if (query.type === "Logical") {
+    elements.queryLogicalOperator.value = query.op || "AND";
+    elements.queryLogicalConditions.value = JSON.stringify(query.conditions || [], null, 2);
+  } else if (query.type === "DiffQuery") {
+    elements.queryDiffAttributeId.value = query.toCondition?.attributeId || query.fromCondition?.attributeId || "";
+    elements.queryIntervalTarget.value = query.intervalTarget || "TO";
+    elements.queryDiffType.value = query.diffType || "IN";
+    elements.queryDiffFromOperator.value = query.fromCondition?.comparisonOperator || "ISNULL";
+    elements.queryDiffFromValue.value = query.fromCondition?.comparisonValue || "";
+    elements.queryDiffToOperator.value = query.toCondition?.comparisonOperator || "ISNOTNULL";
+    elements.queryDiffToValue.value = query.toCondition?.comparisonValue || "";
+  } else {
+    elements.queryAttributeId.value = query.condition?.attributeId || "";
+    elements.queryComparisonOperator.value = query.condition?.comparisonOperator || "ISNOTNULL";
+    elements.queryComparisonValue.value = query.condition?.comparisonValue || "";
+    elements.queryReferenceIds.value = toLines(query.condition?.referenceIds);
+    elements.queryOnlyLatestData.checked = query.onlyLatestData === true;
+  }
+
+  renderQueryTypeFields();
+}
+
+function applyQueryBuilder({ updateBody }) {
+  if (!isQueryEndpoint(elements.path.value)) {
+    return;
+  }
+
+  const pathOnly = elements.path.value.split("?", 1)[0];
+  const parameters = new URLSearchParams();
+  addQueryParameter(parameters, "baseDate", elements.queryBaseDate.value);
+  addQueryParameter(parameters, "entityType", elements.queryEntityType.value);
+  addQueryParameter(parameters, "from", elements.queryFrom.value);
+  addQueryParameter(parameters, "to", elements.queryTo.value);
+  const parameterText = parameters.toString();
+  elements.path.value = parameterText ? `${pathOnly}?${parameterText}` : pathOnly;
+
+  if (updateBody) {
+    elements.contentType.value = "application/json";
+    elements.bodyFormat.value = "json";
+    elements.body.value = JSON.stringify({
+      query: buildQueryObject(),
+      attributeSelector: linesToValues(elements.queryAttributeSelector.value),
+      groupAttributeSelector: linesToValues(elements.queryGroupAttributeSelector.value),
+    }, null, 2);
+  }
+}
+
+function buildQueryObject() {
+  if (elements.queryType.value === "Logical") {
+    const conditions = parseJsonField(elements.queryLogicalConditions.value || "[]", "複合条件 JSON");
+    if (!Array.isArray(conditions)) {
+      throw new Error("複合条件 JSON は配列で指定してください。");
+    }
+    return { type: "Logical", op: elements.queryLogicalOperator.value, conditions };
+  }
+
+  if (elements.queryType.value === "DiffQuery") {
+    const attributeId = requireQueryValue(elements.queryDiffAttributeId.value, "差分対象項目 ID");
+    return {
+      type: "DiffQuery",
+      fromCondition: buildComparisonCondition(attributeId, elements.queryDiffFromOperator.value, elements.queryDiffFromValue.value),
+      toCondition: buildComparisonCondition(attributeId, elements.queryDiffToOperator.value, elements.queryDiffToValue.value),
+      intervalTarget: elements.queryIntervalTarget.value,
+      diffType: elements.queryDiffType.value,
+    };
+  }
+
+  const attributeId = requireQueryValue(elements.queryAttributeId.value, "項目 ID");
+  return {
+    type: "AttributeQuery",
+    condition: {
+      ...buildComparisonCondition(attributeId, elements.queryComparisonOperator.value, elements.queryComparisonValue.value),
+      referenceIds: linesToValues(elements.queryReferenceIds.value),
+    },
+    onlyLatestData: elements.queryOnlyLatestData.checked,
+  };
+}
+
+function buildComparisonCondition(attributeId, comparisonOperator, comparisonValue) {
+  const condition = { attributeId, comparisonOperator };
+  if (!isNullComparisonOperator(comparisonOperator)) {
+    condition.comparisonValue = requireQueryValue(comparisonValue, "比較値");
+  }
+  return condition;
+}
+
+function isNullComparisonOperator(comparisonOperator) {
+  return comparisonOperator === "ISNULL" || comparisonOperator === "ISNOTNULL";
+}
+
+function requireQueryValue(value, label) {
+  if (!value.trim()) {
+    throw new Error(`${label} を入力してください。`);
+  }
+  return value.trim();
+}
+
+function linesToValues(value) {
+  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function toLines(values) {
+  return Array.isArray(values) ? values.join("\n") : "";
+}
+
+function addQueryParameter(parameters, name, value) {
+  if (value && value.trim()) {
+    parameters.set(name, value.trim());
   }
 }
 
