@@ -118,8 +118,10 @@ public sealed partial class RequestExecutor
                 ResponseHeaders = responseHeaders,
                 UsedOperationId = selectedOperation?.Id,
                 UsedOperationSummary = selectedOperation?.Summary,
-                ErrorType = null,
-                ErrorMessage = null,
+                ErrorType = response.IsSuccessStatusCode ? null : "http_error",
+                ErrorMessage = response.IsSuccessStatusCode
+                    ? null
+                    : $"IGA API returned {(int)response.StatusCode} {response.ReasonPhrase ?? string.Empty}".TrimEnd(),
                 RequestContentType = plan.ContentType,
                 RequestBodyFormat = plan.BodyFormat,
                 RequestBody = preparedBody,

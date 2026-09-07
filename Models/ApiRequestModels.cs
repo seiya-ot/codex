@@ -96,6 +96,28 @@ public sealed class ExecuteResponse
     public SuccessExampleResponse? SuccessExample { get; set; }
 }
 
+public sealed class ApiErrorLogEntry
+{
+    public string Id { get; set; } = string.Empty;
+    public DateTimeOffset OccurredAtUtc { get; set; }
+    public string Method { get; set; } = string.Empty;
+    public string FinalUrl { get; set; } = string.Empty;
+    public int StatusCode { get; set; }
+    public string? ErrorType { get; set; }
+    public string? ErrorMessage { get; set; }
+    public long ElapsedMilliseconds { get; set; }
+    public string? UsedOperationId { get; set; }
+    public string? UsedOperationSummary { get; set; }
+    public string RequestContentType { get; set; } = string.Empty;
+    public string RequestBodyFormat { get; set; } = string.Empty;
+    public Dictionary<string, string[]> RequestHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string[]> ResponseHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public string ResponseBody { get; set; } = string.Empty;
+    public string ProxyMode { get; set; } = string.Empty;
+    public string? ProxyUrl { get; set; }
+    public List<string> Notes { get; set; } = [];
+}
+
 public sealed class SuccessExampleResponse
 {
     public int StatusCode { get; set; } = 200;

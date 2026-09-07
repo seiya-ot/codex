@@ -57,6 +57,9 @@ const elements = {
   executeButton: document.getElementById("executeButton"),
   executeMeta: document.getElementById("executeMeta"),
   responseViewer: document.getElementById("responseViewer"),
+  reloadErrorLogButton: document.getElementById("reloadErrorLogButton"),
+  clearErrorLogButton: document.getElementById("clearErrorLogButton"),
+  errorLogItems: document.getElementById("errorLogItems"),
   coverageButton: document.getElementById("coverageButton"),
   coverageMeta: document.getElementById("coverageMeta"),
   coverageSummary: document.getElementById("coverageSummary"),
@@ -71,6 +74,8 @@ elements.resolveButton.addEventListener("click", () => resolveRequest());
 elements.executeButton.addEventListener("click", executeRequest);
 elements.coverageButton.addEventListener("click", buildCoveragePlan);
 elements.refreshButton.addEventListener("click", refreshManuals);
+elements.reloadErrorLogButton.addEventListener("click", loadErrorLog);
+elements.clearErrorLogButton.addEventListener("click", clearErrorLog);
 elements.requestText.addEventListener("input", handleRequestTextInput);
 elements.requestText.addEventListener("compositionstart", handleRequestTextCompositionStart);
 elements.requestText.addEventListener("compositionend", handleRequestTextCompositionEnd);
@@ -85,7 +90,7 @@ elements.executeQueryButton.addEventListener("click", async () => {
 
 async function bootstrap() {
   loadLocalSettings();
-  await Promise.all([loadOverview(), loadCatalog()]);
+  await Promise.all([loadOverview(), loadCatalog(), loadErrorLog()]);
 }
 
 async function loadOverview() {
@@ -221,10 +226,80 @@ async function executeRequest() {
 
   const response = await postJson("/api/execute", payload);
   renderExecutionResult(response);
+  if (!response.isSuccessStatusCode) {
+    await loadErrorLog();
+  }
 
   if (!hadBody && plan.bodyGenerated) {
     elements.body.value = plan.body || "";
   }
+}
+
+async function loadErrorLog() {
+  const entries = await fetchJson("/api/error-log");
+  renderErrorLog(entries);
+}
+
+function renderErrorLog(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    elements.errorLogItems.innerHTML = '<div class="error-log-item"><p>記録済みのエラーはありません。</p></div>';
+    return;
+  }
+
+  elements.errorLogItems.innerHTML = entries.map((entry) => {
+    const status = entry.statusCode > 0 ? `HTTP ${entry.statusCode}` : (entry.errorType || "error");
+    const time = new Date(entry.occurredAtUtc).toLocaleString("ja-JP");
+    return `
+      <article class="error-log-item">
+        <header>
+          <div><div class="badge method">${escapeHtml(entry.method)}</div><h3>${escapeHtml(status)}: ${escapeHtml(entry.errorMessage || "実行に失敗しました")}</h3></div>
+          <div class="actions"><button data-error-log-show="${escapeAttribute(entry.id)}">詳細</button><button data-error-log-delete="${escapeAttribute(entry.id)}">削除</button></div>
+        </header>
+        <p>${escapeHtml(entry.finalUrl || "URL を確定できませんでした")}</p>
+        <p>${escapeHtml(time)} / ${escapeHtml(String(entry.elapsedMilliseconds || 0))} ms</p>
+      </article>
+    `;
+  }).join("");
+
+  elements.errorLogItems.querySelectorAll("button[data-error-log-show]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const entry = entries.find((item) => item.id === button.dataset.errorLogShow);
+      if (entry) {
+        elements.responseViewer.textContent = formatErrorLogEntry(entry);
+      }
+    });
+  });
+  elements.errorLogItems.querySelectorAll("button[data-error-log-delete]").forEach((button) => {
+    button.addEventListener("click", async () => deleteErrorLogEntry(button.dataset.errorLogDelete));
+  });
+}
+
+function formatErrorLogEntry(entry) {
+  const requestHeaders = Object.keys(entry.requestHeaders || {}).length > 0
+    ? `Request headers:\n${JSON.stringify(entry.requestHeaders, null, 2)}\n\n` : "";
+  const responseHeaders = Object.keys(entry.responseHeaders || {}).length > 0
+    ? `Response headers:\n${JSON.stringify(entry.responseHeaders, null, 2)}\n\n` : "";
+  const notes = Array.isArray(entry.notes) && entry.notes.length > 0
+    ? `Notes:\n- ${entry.notes.join("\n- ")}\n\n` : "";
+  return `Recorded: ${new Date(entry.occurredAtUtc).toLocaleString("ja-JP")}\n${entry.method} ${entry.finalUrl}\n` +
+    `Status: ${entry.statusCode || entry.errorType || "error"}\nError: ${entry.errorMessage || "実行に失敗しました"}\n` +
+    `Elapsed: ${entry.elapsedMilliseconds || 0} ms\n\n${requestHeaders}${responseHeaders}${notes}${entry.responseBody || "(empty response body)"}`;
+}
+
+async function deleteErrorLogEntry(id) {
+  const response = await fetch(`/api/error-log/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) {
+    throw new Error(`エラー履歴の削除に失敗しました: ${response.status}`);
+  }
+  await loadErrorLog();
+}
+
+async function clearErrorLog() {
+  const response = await fetch("/api/error-log", { method: "DELETE" });
+  if (!response.ok) {
+    throw new Error(`エラー履歴の削除に失敗しました: ${response.status}`);
+  }
+  await loadErrorLog();
 }
 
 function renderExecutionResult(response) {

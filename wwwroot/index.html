@@ -14,6 +14,7 @@
       <div><h2>依頼内容</h2><label>やりたいこと<textarea id="requestText" rows="5" placeholder="例：指定したメンバー ID の所属組織を確認したい"></textarea></label><div class="actions"><button id="resolveButton" class="primary">候補を検索</button><button id="refreshButton">マニュアルを再読込</button></div></div>
     </section>
     <section class="panel"><div class="section-head"><h2>候補 API</h2><span id="candidateMeta" class="subtle"></span></div><div id="candidates" class="candidate-list"></div></section>
+    <section class="panel"><div class="section-head"><div><h2>エラー履歴</h2><p class="subtle">失敗した API 実行をローカルに記録します。認証情報と URL のクエリは保存しません。</p></div><div class="actions"><button id="reloadErrorLogButton">再読込</button><button id="clearErrorLogButton">すべて削除</button></div></div><div id="errorLogItems" class="error-log-list"></div></section>
     <section class="panel two-column">
       <div><h2>リクエストの編集</h2><label>Operation ID<input id="operationId" type="text" placeholder="候補を選択すると入力されます"></label><div class="inline-grid"><label>Method<input id="method" type="text" placeholder="GET"></label><label>Path<input id="path" type="text" placeholder="/api/v22.10/query"></label></div><div class="inline-grid"><label>Content-Type<input id="contentType" type="text" placeholder="application/json"></label><label>Body 形式<select id="bodyFormat"><option value="json">JSON / text</option><option value="multipart">multipart form-data</option><option value="base64">base64 binary</option></select></label></div>
         <section id="queryBuilder" class="query-builder" hidden>

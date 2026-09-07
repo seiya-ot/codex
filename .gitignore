@@ -4,3 +4,5 @@ obj/
 .nuget/
 .appdata/
 .user-session-build/
+Data/api-error-log.json
+secrets.env
