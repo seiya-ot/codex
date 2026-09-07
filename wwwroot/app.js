@@ -2,8 +2,11 @@ const state = {
   catalog: [],
   candidates: [],
   autoResolveTimer: 0,
+  operationSyncTimer: 0,
   isRequestTextComposing: false,
   resolveSequence: 0,
+  isExecuting: false,
+  latestResponseText: "",
 };
 
 const elements = {
@@ -21,40 +24,15 @@ const elements = {
   operationId: document.getElementById("operationId"),
   method: document.getElementById("method"),
   path: document.getElementById("path"),
+  queryParameters: document.getElementById("queryParameters"),
   contentType: document.getElementById("contentType"),
   bodyFormat: document.getElementById("bodyFormat"),
   body: document.getElementById("body"),
-  queryBuilder: document.getElementById("queryBuilder"),
-  queryBaseDate: document.getElementById("queryBaseDate"),
-  queryEntityType: document.getElementById("queryEntityType"),
-  queryFrom: document.getElementById("queryFrom"),
-  queryTo: document.getElementById("queryTo"),
-  queryType: document.getElementById("queryType"),
-  attributeQueryFields: document.getElementById("attributeQueryFields"),
-  queryAttributeId: document.getElementById("queryAttributeId"),
-  queryComparisonOperator: document.getElementById("queryComparisonOperator"),
-  queryComparisonValue: document.getElementById("queryComparisonValue"),
-  queryReferenceIds: document.getElementById("queryReferenceIds"),
-  queryOnlyLatestData: document.getElementById("queryOnlyLatestData"),
-  logicalQueryFields: document.getElementById("logicalQueryFields"),
-  queryLogicalOperator: document.getElementById("queryLogicalOperator"),
-  queryLogicalConditions: document.getElementById("queryLogicalConditions"),
-  diffQueryFields: document.getElementById("diffQueryFields"),
-  queryDiffAttributeId: document.getElementById("queryDiffAttributeId"),
-  queryIntervalTarget: document.getElementById("queryIntervalTarget"),
-  queryDiffType: document.getElementById("queryDiffType"),
-  queryDiffFromOperator: document.getElementById("queryDiffFromOperator"),
-  queryDiffFromValue: document.getElementById("queryDiffFromValue"),
-  queryDiffToOperator: document.getElementById("queryDiffToOperator"),
-  queryDiffToValue: document.getElementById("queryDiffToValue"),
-  queryAttributeSelector: document.getElementById("queryAttributeSelector"),
-  queryGroupAttributeSelector: document.getElementById("queryGroupAttributeSelector"),
-  applyQueryBuilderButton: document.getElementById("applyQueryBuilderButton"),
-  resetQueryBuilderButton: document.getElementById("resetQueryBuilderButton"),
-  executeQueryButton: document.getElementById("executeQueryButton"),
+  generateBodyButton: document.getElementById("generateBodyButton"),
   variables: document.getElementById("variables"),
   headers: document.getElementById("headers"),
   executeButton: document.getElementById("executeButton"),
+  copyResponseQueryButton: document.getElementById("copyResponseQueryButton"),
   executeMeta: document.getElementById("executeMeta"),
   responseViewer: document.getElementById("responseViewer"),
   reloadErrorLogButton: document.getElementById("reloadErrorLogButton"),
@@ -72,6 +50,8 @@ bootstrap().catch((error) => {
 
 elements.resolveButton.addEventListener("click", () => resolveRequest());
 elements.executeButton.addEventListener("click", executeRequest);
+elements.copyResponseQueryButton.addEventListener("click", copyExecutionResult);
+elements.generateBodyButton.addEventListener("click", generateBodyTemplate);
 elements.coverageButton.addEventListener("click", buildCoveragePlan);
 elements.refreshButton.addEventListener("click", refreshManuals);
 elements.reloadErrorLogButton.addEventListener("click", loadErrorLog);
@@ -79,14 +59,10 @@ elements.clearErrorLogButton.addEventListener("click", clearErrorLog);
 elements.requestText.addEventListener("input", handleRequestTextInput);
 elements.requestText.addEventListener("compositionstart", handleRequestTextCompositionStart);
 elements.requestText.addEventListener("compositionend", handleRequestTextCompositionEnd);
-elements.path.addEventListener("input", () => toggleQueryBuilder({ hydrate: false }));
-elements.queryType.addEventListener("change", renderQueryTypeFields);
-elements.applyQueryBuilderButton.addEventListener("click", () => applyQueryBuilder({ updateBody: true }));
-elements.resetQueryBuilderButton.addEventListener("click", resetQueryBuilder);
-elements.executeQueryButton.addEventListener("click", async () => {
-  applyQueryBuilder({ updateBody: true });
-  await executeRequest();
-});
+elements.operationId.addEventListener("input", handleOperationIdInput);
+elements.operationId.addEventListener("change", handleOperationIdInput);
+elements.responseViewer.addEventListener("keydown", handleResponseViewerKeyDown);
+elements.copyResponseQueryButton.disabled = true;
 
 async function bootstrap() {
   loadLocalSettings();
@@ -158,6 +134,10 @@ function renderCandidates() {
   elements.candidateMeta.textContent = `${state.candidates.length} 件ヒット`;
   elements.candidates.innerHTML = state.candidates.map((candidate) => {
     const operation = candidate.operation;
+    const optionalQueryKeys = Object.keys(operation.optionalQueryParameters || {});
+    const optionalQueryBlock = optionalQueryKeys.length > 0
+      ? `<p>${escapeHtml(`optional query: ${optionalQueryKeys.join(", ")}`)}</p>`
+      : "";
     return `
       <article class="candidate">
         <header>
@@ -169,6 +149,7 @@ function renderCandidates() {
         </header>
         <p>${escapeHtml(operation.path)}</p>
         <p>${escapeHtml(candidate.reasons.join(" / "))}</p>
+        ${optionalQueryBlock}
         <div class="meta">
           <span class="badge">${escapeHtml(operation.manualName)}</span>
           <span class="badge">${escapeHtml(operation.category)}</span>
@@ -198,9 +179,9 @@ async function applySelectedOperation(operation) {
   elements.contentType.value = operation.sampleContentType || "application/json";
   elements.bodyFormat.value = "json";
   elements.body.value = operation.sampleBody || "";
+  elements.queryParameters.value = JSON.stringify(operation.optionalQueryParameters || {}, null, 2);
 
   const plan = await planRequestBody({ overwriteBody: true });
-  toggleQueryBuilder({ hydrate: true });
   elements.responseViewer.textContent =
     `選択済み: ${operation.summary}\n` +
     `${operation.method} ${operation.path}\n\n` +
@@ -208,30 +189,38 @@ async function applySelectedOperation(operation) {
 }
 
 async function executeRequest() {
-  persistLocalSettings();
-
-  if (isQueryEndpoint(elements.path.value)) {
-    applyQueryBuilder({ updateBody: true });
+  if (state.isExecuting) {
+    return;
   }
 
-  const hadBody = Boolean(elements.body.value.trim());
-  const plan = await planRequestBody({ overwriteBody: false });
-  const payload = collectExecutePayload();
+  state.latestResponseText = "";
+  elements.copyResponseQueryButton.disabled = true;
+  setExecuteBusy(true);
 
-  if (!hadBody && plan.bodyGenerated) {
-    payload.body = "";
-    payload.contentType = plan.contentType || payload.contentType;
-    payload.bodyFormat = plan.bodyFormat || payload.bodyFormat;
-  }
+  try {
+    persistLocalSettings();
 
-  const response = await postJson("/api/execute", payload);
-  renderExecutionResult(response);
-  if (!response.isSuccessStatusCode) {
-    await loadErrorLog();
-  }
+    const hadBody = Boolean(elements.body.value.trim());
+    const plan = await planRequestBody({ overwriteBody: false, forceGenerate: !hadBody });
+    const payload = collectExecutePayload();
 
-  if (!hadBody && plan.bodyGenerated) {
-    elements.body.value = plan.body || "";
+    if (!hadBody && plan.bodyGenerated) {
+      payload.body = plan.body || "";
+      payload.contentType = plan.contentType || payload.contentType;
+      payload.bodyFormat = plan.bodyFormat || payload.bodyFormat;
+    }
+
+    const response = await postJson("/api/execute", payload);
+    renderExecutionResult(response);
+    if (!response.isSuccessStatusCode) {
+      await loadErrorLog();
+    }
+
+    if (!hadBody && plan.bodyGenerated) {
+      elements.body.value = plan.body || "";
+    }
+  } finally {
+    setExecuteBusy(false);
   }
 }
 
@@ -252,8 +241,14 @@ function renderErrorLog(entries) {
     return `
       <article class="error-log-item">
         <header>
-          <div><div class="badge method">${escapeHtml(entry.method)}</div><h3>${escapeHtml(status)}: ${escapeHtml(entry.errorMessage || "実行に失敗しました")}</h3></div>
-          <div class="actions"><button data-error-log-show="${escapeAttribute(entry.id)}">詳細</button><button data-error-log-delete="${escapeAttribute(entry.id)}">削除</button></div>
+          <div>
+            <div class="badge method">${escapeHtml(entry.method)}</div>
+            <h3>${escapeHtml(status)}: ${escapeHtml(entry.errorMessage || "実行に失敗しました")}</h3>
+          </div>
+          <div class="actions">
+            <button data-error-log-show="${escapeAttribute(entry.id)}">詳細</button>
+            <button data-error-log-delete="${escapeAttribute(entry.id)}">削除</button>
+          </div>
         </header>
         <p>${escapeHtml(entry.finalUrl || "URL を確定できませんでした")}</p>
         <p>${escapeHtml(time)} / ${escapeHtml(String(entry.elapsedMilliseconds || 0))} ms</p>
@@ -302,13 +297,23 @@ async function clearErrorLog() {
   await loadErrorLog();
 }
 
+async function generateBodyTemplate() {
+  persistLocalSettings();
+  const plan = await planRequestBody({ overwriteBody: true, forceGenerate: true });
+  elements.responseViewer.textContent =
+    `Body generated for:\n${elements.method.value || "(method)"} ${elements.path.value || "(path)"}\n\n` +
+    formatPlanSummary(plan);
+  state.latestResponseText = "";
+  elements.copyResponseQueryButton.disabled = true;
+}
+
 function renderExecutionResult(response) {
+
   const statusLabel = response.statusCode > 0 ? String(response.statusCode) : (response.errorType || "error");
   const hasSuccessExample = Boolean(response.successExample && response.successExample.body && !response.isSuccessStatusCode);
   elements.executeMeta.textContent =
     `${statusLabel} ${response.isSuccessStatusCode ? "success" : "error"} / ${response.elapsedMilliseconds} ms` +
-    (hasSuccessExample ? " / success example available" : "") +
-    formatQueryResultMeta(response);
+    (hasSuccessExample ? " / success example available" : "");
 
   const requestMetaLines = [
     response.requestContentType ? `Content-Type: ${response.requestContentType}` : "",
@@ -324,6 +329,7 @@ function renderExecutionResult(response) {
   const requestMetaBlock = requestMetaLines.length > 0
     ? `${requestMetaLines.join("\n")}\n\n`
     : "";
+  const requestParametersBlock = formatRequestParametersBlock(response);
   const errorBlock = response.errorMessage
     ? `Error: ${response.errorMessage}\n\n`
     : "";
@@ -341,24 +347,16 @@ function renderExecutionResult(response) {
   elements.responseViewer.textContent =
     `${requestBlock}` +
     `${requestMetaBlock}` +
+    `${requestParametersBlock}` +
     `${errorBlock}` +
     `${successExampleBlock}` +
     `${noteBlock}` +
     `${headersBlock}` +
     `${bodyBlock}`;
-}
 
-function formatQueryResultMeta(response) {
-  if (!isQueryEndpoint(response.finalUrl || elements.path.value) || !response.isSuccessStatusCode) {
-    return "";
-  }
-
-  try {
-    const result = JSON.parse(response.responseBody || "{}");
-    return Array.isArray(result.results) ? ` / ${result.results.length} results` : "";
-  } catch {
-    return "";
-  }
+  state.latestResponseText = elements.responseViewer.textContent || "";
+  elements.copyResponseQueryButton.disabled = !state.latestResponseText.trim();
+  elements.responseViewer.focus();
 }
 
 function formatSuccessExample(successExample) {
@@ -373,6 +371,96 @@ function formatSuccessExample(successExample) {
     : "";
 
   return `${metaLines.join("\n")}\n\n${notesBlock}${successExample.body}\n\n`;
+}
+
+function formatRequestParametersBlock(response) {
+  const sections = [];
+
+  if (response.requestQueryParameters && Object.keys(response.requestQueryParameters).length > 0) {
+    sections.push(`Query parameters:\n${JSON.stringify(response.requestQueryParameters, null, 2)}`);
+  }
+
+  if (response.requestVariables && Object.keys(response.requestVariables).length > 0) {
+    sections.push(`Variables:\n${JSON.stringify(response.requestVariables, null, 2)}`);
+  }
+
+  if (response.requestCustomHeaders && Object.keys(response.requestCustomHeaders).length > 0) {
+    sections.push(`Custom headers:\n${JSON.stringify(response.requestCustomHeaders, null, 2)}`);
+  }
+
+  if (sections.length === 0) {
+    return "";
+  }
+
+  return `Request parameters:\n${sections.join("\n\n")}\n\n`;
+}
+
+function setExecuteBusy(isBusy) {
+  state.isExecuting = isBusy;
+  elements.executeButton.disabled = isBusy;
+}
+
+async function copyExecutionResult() {
+  if (!state.latestResponseText) {
+    return;
+  }
+
+  try {
+    await copyTextToClipboard(state.latestResponseText);
+    if (!elements.executeMeta.textContent.includes("result copied")) {
+      elements.executeMeta.textContent = `${elements.executeMeta.textContent} / result copied`;
+    }
+  } catch (error) {
+    elements.responseViewer.textContent = formatError(error);
+  }
+}
+
+function handleResponseViewerKeyDown(event) {
+  const isSelectAll = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a";
+  if (!isSelectAll) {
+    return;
+  }
+
+  event.preventDefault();
+  selectElementText(elements.responseViewer);
+}
+
+function selectElementText(element) {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) {
+      throw new Error("Clipboard copy command failed.");
+    }
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }
 
 async function buildCoveragePlan() {
@@ -408,10 +496,12 @@ async function refreshManuals() {
   await postJson("/api/admin/refresh-manuals", {});
   await Promise.all([loadOverview(), loadCatalog()]);
   elements.responseViewer.textContent = "マニュアルカタログを再取得しました。";
+  state.latestResponseText = "";
+  elements.copyResponseQueryButton.disabled = true;
 }
 
-async function planRequestBody({ overwriteBody }) {
-  const payload = collectBodyPlanPayload();
+async function planRequestBody({ overwriteBody, forceGenerate = false }) {
+  const payload = collectBodyPlanPayload({ forceGenerate });
   const response = await postJson("/api/body-plan", payload);
 
   elements.contentType.value = response.contentType || elements.contentType.value;
@@ -424,7 +514,7 @@ async function planRequestBody({ overwriteBody }) {
   return response;
 }
 
-function collectBodyPlanPayload() {
+function collectBodyPlanPayload({ forceGenerate = false } = {}) {
   return {
     operationId: elements.operationId.value || null,
     requestText: elements.requestText.value,
@@ -433,8 +523,8 @@ function collectBodyPlanPayload() {
     path: elements.path.value || null,
     contentType: elements.contentType.value || null,
     bodyFormat: elements.bodyFormat.value,
-    body: elements.body.value,
-    variables: parseJsonField(elements.variables.value, "Variables JSON"),
+    body: forceGenerate ? "" : elements.body.value,
+    variables: parseStringMapField(elements.variables.value, "Variables JSON"),
   };
 }
 
@@ -458,8 +548,9 @@ function collectExecutePayload() {
     bypassSystemProxy: isProxyDisabled,
     useDefaultProxyCredentials: true,
     timeoutSeconds: Number.isFinite(timeoutSeconds) ? timeoutSeconds : 30,
-    variables: parseJsonField(elements.variables.value, "Variables JSON"),
-    headers: parseJsonField(elements.headers.value, "Headers JSON"),
+    variables: parseStringMapField(elements.variables.value, "Variables JSON"),
+    queryParameters: parseStringMapField(elements.queryParameters.value, "Query params JSON"),
+    headers: parseStringMapField(elements.headers.value, "Headers JSON"),
   };
 }
 
@@ -495,196 +586,21 @@ function parseJsonField(raw, label) {
   }
 }
 
-function isQueryEndpoint(path) {
-  return /^\/api\/v\d+\.\d+\/query(?:[/?#]|$)/i.test(String(path).trim()) ||
-    /\/api\/v\d+\.\d+\/query(?:[/?#]|$)/i.test(String(path).trim());
-}
-
-function toggleQueryBuilder({ hydrate }) {
-  const isQuery = isQueryEndpoint(elements.path.value);
-  elements.queryBuilder.hidden = !isQuery;
-  if (!isQuery) {
-    return;
+function parseStringMapField(raw, label) {
+  const parsed = parseJsonField(raw, label);
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new Error(`${label} は JSON オブジェクトで指定してください`);
   }
 
-  renderQueryTypeFields();
-  if (hydrate) {
-    hydrateQueryBuilder();
-  }
-}
-
-function renderQueryTypeFields() {
-  const queryType = elements.queryType.value;
-  elements.attributeQueryFields.hidden = queryType !== "AttributeQuery";
-  elements.logicalQueryFields.hidden = queryType !== "Logical";
-  elements.diffQueryFields.hidden = queryType !== "DiffQuery";
-}
-
-function resetQueryBuilder() {
-  const today = new Date().toISOString().slice(0, 10);
-  elements.queryBaseDate.value = today;
-  elements.queryEntityType.value = "member";
-  elements.queryFrom.value = "";
-  elements.queryTo.value = "";
-  elements.queryType.value = "AttributeQuery";
-  elements.queryAttributeId.value = "";
-  elements.queryComparisonOperator.value = "ISNOTNULL";
-  elements.queryComparisonValue.value = "";
-  elements.queryReferenceIds.value = "";
-  elements.queryOnlyLatestData.checked = false;
-  elements.queryLogicalOperator.value = "AND";
-  elements.queryLogicalConditions.value = "";
-  elements.queryDiffAttributeId.value = "";
-  elements.queryIntervalTarget.value = "TO";
-  elements.queryDiffType.value = "IN";
-  elements.queryDiffFromOperator.value = "ISNULL";
-  elements.queryDiffFromValue.value = "";
-  elements.queryDiffToOperator.value = "ISNOTNULL";
-  elements.queryDiffToValue.value = "";
-  elements.queryAttributeSelector.value = "";
-  elements.queryGroupAttributeSelector.value = "";
-  renderQueryTypeFields();
-}
-
-function hydrateQueryBuilder() {
-  resetQueryBuilder();
-  const [pathOnly, queryString = ""] = elements.path.value.split("?", 2);
-  const parameters = new URLSearchParams(queryString);
-  elements.path.value = pathOnly;
-  elements.queryBaseDate.value = parameters.get("baseDate") || elements.queryBaseDate.value;
-  elements.queryEntityType.value = parameters.get("entityType") || "member";
-  elements.queryFrom.value = parameters.get("from") || "";
-  elements.queryTo.value = parameters.get("to") || "";
-
-  if (!elements.body.value.trim()) {
-    return;
-  }
-
-  try {
-    const body = JSON.parse(elements.body.value);
-    elements.queryAttributeSelector.value = toLines(body.attributeSelector);
-    elements.queryGroupAttributeSelector.value = toLines(body.groupAttributeSelector);
-    hydrateQueryObject(body.query);
-  } catch {
-    // 手入力中の JSON は壊れている可能性があるため、フォーム初期値を維持する。
-  }
-}
-
-function hydrateQueryObject(query) {
-  if (!query || typeof query !== "object") {
-    return;
-  }
-
-  elements.queryType.value = query.type || "AttributeQuery";
-  if (query.type === "Logical") {
-    elements.queryLogicalOperator.value = query.op || "AND";
-    elements.queryLogicalConditions.value = JSON.stringify(query.conditions || [], null, 2);
-  } else if (query.type === "DiffQuery") {
-    elements.queryDiffAttributeId.value = query.toCondition?.attributeId || query.fromCondition?.attributeId || "";
-    elements.queryIntervalTarget.value = query.intervalTarget || "TO";
-    elements.queryDiffType.value = query.diffType || "IN";
-    elements.queryDiffFromOperator.value = query.fromCondition?.comparisonOperator || "ISNULL";
-    elements.queryDiffFromValue.value = query.fromCondition?.comparisonValue || "";
-    elements.queryDiffToOperator.value = query.toCondition?.comparisonOperator || "ISNOTNULL";
-    elements.queryDiffToValue.value = query.toCondition?.comparisonValue || "";
-  } else {
-    elements.queryAttributeId.value = query.condition?.attributeId || "";
-    elements.queryComparisonOperator.value = query.condition?.comparisonOperator || "ISNOTNULL";
-    elements.queryComparisonValue.value = query.condition?.comparisonValue || "";
-    elements.queryReferenceIds.value = toLines(query.condition?.referenceIds);
-    elements.queryOnlyLatestData.checked = query.onlyLatestData === true;
-  }
-
-  renderQueryTypeFields();
-}
-
-function applyQueryBuilder({ updateBody }) {
-  if (!isQueryEndpoint(elements.path.value)) {
-    return;
-  }
-
-  const pathOnly = elements.path.value.split("?", 1)[0];
-  const parameters = new URLSearchParams();
-  addQueryParameter(parameters, "baseDate", elements.queryBaseDate.value);
-  addQueryParameter(parameters, "entityType", elements.queryEntityType.value);
-  addQueryParameter(parameters, "from", elements.queryFrom.value);
-  addQueryParameter(parameters, "to", elements.queryTo.value);
-  const parameterText = parameters.toString();
-  elements.path.value = parameterText ? `${pathOnly}?${parameterText}` : pathOnly;
-
-  if (updateBody) {
-    elements.contentType.value = "application/json";
-    elements.bodyFormat.value = "json";
-    elements.body.value = JSON.stringify({
-      query: buildQueryObject(),
-      attributeSelector: linesToValues(elements.queryAttributeSelector.value),
-      groupAttributeSelector: linesToValues(elements.queryGroupAttributeSelector.value),
-    }, null, 2);
-  }
-}
-
-function buildQueryObject() {
-  if (elements.queryType.value === "Logical") {
-    const conditions = parseJsonField(elements.queryLogicalConditions.value || "[]", "複合条件 JSON");
-    if (!Array.isArray(conditions)) {
-      throw new Error("複合条件 JSON は配列で指定してください。");
+  const result = {};
+  Object.entries(parsed).forEach(([key, value]) => {
+    if (!key || value === undefined || value === null) {
+      return;
     }
-    return { type: "Logical", op: elements.queryLogicalOperator.value, conditions };
-  }
 
-  if (elements.queryType.value === "DiffQuery") {
-    const attributeId = requireQueryValue(elements.queryDiffAttributeId.value, "差分対象項目 ID");
-    return {
-      type: "DiffQuery",
-      fromCondition: buildComparisonCondition(attributeId, elements.queryDiffFromOperator.value, elements.queryDiffFromValue.value),
-      toCondition: buildComparisonCondition(attributeId, elements.queryDiffToOperator.value, elements.queryDiffToValue.value),
-      intervalTarget: elements.queryIntervalTarget.value,
-      diffType: elements.queryDiffType.value,
-    };
-  }
-
-  const attributeId = requireQueryValue(elements.queryAttributeId.value, "項目 ID");
-  return {
-    type: "AttributeQuery",
-    condition: {
-      ...buildComparisonCondition(attributeId, elements.queryComparisonOperator.value, elements.queryComparisonValue.value),
-      referenceIds: linesToValues(elements.queryReferenceIds.value),
-    },
-    onlyLatestData: elements.queryOnlyLatestData.checked,
-  };
-}
-
-function buildComparisonCondition(attributeId, comparisonOperator, comparisonValue) {
-  const condition = { attributeId, comparisonOperator };
-  if (!isNullComparisonOperator(comparisonOperator)) {
-    condition.comparisonValue = requireQueryValue(comparisonValue, "比較値");
-  }
-  return condition;
-}
-
-function isNullComparisonOperator(comparisonOperator) {
-  return comparisonOperator === "ISNULL" || comparisonOperator === "ISNOTNULL";
-}
-
-function requireQueryValue(value, label) {
-  if (!value.trim()) {
-    throw new Error(`${label} を入力してください。`);
-  }
-  return value.trim();
-}
-
-function linesToValues(value) {
-  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-}
-
-function toLines(values) {
-  return Array.isArray(values) ? values.join("\n") : "";
-}
-
-function addQueryParameter(parameters, name, value) {
-  if (value && value.trim()) {
-    parameters.set(name, value.trim());
-  }
+    result[key] = typeof value === "string" ? value : String(value);
+  });
+  return result;
 }
 
 async function fetchJson(url) {
@@ -718,6 +634,7 @@ function loadLocalSettings() {
   elements.timeoutSeconds.value = localStorage.getItem("iij.timeoutSeconds") || "30";
   elements.proxyMode.value = localStorage.getItem("iij.proxyMode") || "system";
   elements.variables.value = localStorage.getItem("iij.variables") || "{}";
+  elements.queryParameters.value = localStorage.getItem("iij.queryParameters") || "{}";
   elements.headers.value = localStorage.getItem("iij.headers") || "{}";
 }
 
@@ -728,6 +645,7 @@ function persistLocalSettings() {
   localStorage.setItem("iij.timeoutSeconds", elements.timeoutSeconds.value);
   localStorage.setItem("iij.proxyMode", elements.proxyMode.value);
   localStorage.setItem("iij.variables", elements.variables.value);
+  localStorage.setItem("iij.queryParameters", elements.queryParameters.value);
   localStorage.setItem("iij.headers", elements.headers.value);
 }
 
@@ -749,6 +667,10 @@ function handleRequestTextCompositionEnd() {
   scheduleAutoResolve();
 }
 
+function handleOperationIdInput() {
+  scheduleOperationSync();
+}
+
 function scheduleAutoResolve() {
   cancelAutoResolve();
   state.autoResolveTimer = window.setTimeout(async () => {
@@ -761,11 +683,44 @@ function scheduleAutoResolve() {
   }, 400);
 }
 
+function scheduleOperationSync() {
+  cancelOperationSync();
+  state.operationSyncTimer = window.setTimeout(async () => {
+    try {
+      await applyOperationFromOperationId();
+    } catch (error) {
+      elements.responseViewer.textContent = formatError(error);
+    }
+  }, 200);
+}
+
 function cancelAutoResolve() {
   if (state.autoResolveTimer) {
     window.clearTimeout(state.autoResolveTimer);
     state.autoResolveTimer = 0;
   }
+}
+
+function cancelOperationSync() {
+  if (state.operationSyncTimer) {
+    window.clearTimeout(state.operationSyncTimer);
+    state.operationSyncTimer = 0;
+  }
+}
+
+async function applyOperationFromOperationId() {
+  const typedOperationId = elements.operationId.value.trim();
+  if (!typedOperationId) {
+    return;
+  }
+
+  const operation = state.catalog.find((item) => item.id.localeCompare(typedOperationId, undefined, { sensitivity: "accent" }) === 0);
+  if (!operation) {
+    return;
+  }
+
+  await applySelectedOperation(operation);
+  await resolveRequest();
 }
 
 function formatError(error) {
