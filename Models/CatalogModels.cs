@@ -49,6 +49,7 @@ public sealed class ApiOperation
     public List<string> Aliases { get; set; } = [];
     public List<string> SearchKeywords { get; set; } = [];
     public List<ParameterTemplate> PathParameters { get; set; } = [];
+    public Dictionary<string, string> OptionalQueryParameters { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string? SampleBody { get; set; }
     public string? SampleContentType { get; set; }
     public List<string> Notes { get; set; } = [];

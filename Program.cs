@@ -12,10 +12,12 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<ManualCatalogStore>();
 builder.Services.AddSingleton<RequestResolver>();
+builder.Services.AddSingleton<AttributeIdCatalog>();
 builder.Services.AddSingleton<RequestBodyPlanner>();
 builder.Services.AddSingleton<SuccessExamplePlanner>();
 builder.Services.AddSingleton<RequestExecutor>();
 builder.Services.AddSingleton<CoveragePlanner>();
+builder.Services.AddSingleton<ApiErrorLogStore>();
 
 var app = builder.Build();
 
@@ -59,7 +61,12 @@ app.MapPost("/api/resolve", (ResolveRequestInput input, RequestResolver resolver
     return Results.Ok(response);
 });
 
-app.MapPost("/api/execute", async (ExecuteRequestInput input, RequestResolver resolver, RequestExecutor executor) =>
+app.MapPost("/api/execute", async (
+    ExecuteRequestInput input,
+    RequestResolver resolver,
+    RequestExecutor executor,
+    ApiErrorLogStore errorLogStore,
+    HttpContext context) =>
 {
     var resolved = resolver.Resolve(new ResolveRequestInput
     {
@@ -71,7 +78,26 @@ app.MapPost("/api/execute", async (ExecuteRequestInput input, RequestResolver re
     });
 
     var response = await executor.ExecuteAsync(input, resolved);
+    await errorLogStore.RecordIfFailedAsync(response, context.RequestAborted);
     return Results.Ok(response);
+});
+
+app.MapGet("/api/error-log", async (ApiErrorLogStore store, HttpContext context) =>
+{
+    return Results.Ok(await store.GetEntriesAsync(context.RequestAborted));
+});
+
+app.MapDelete("/api/error-log/{id}", async (string id, ApiErrorLogStore store, HttpContext context) =>
+{
+    return await store.DeleteAsync(id, context.RequestAborted)
+        ? Results.NoContent()
+        : Results.NotFound();
+});
+
+app.MapDelete("/api/error-log", async (ApiErrorLogStore store, HttpContext context) =>
+{
+    await store.ClearAsync(context.RequestAborted);
+    return Results.NoContent();
 });
 
 app.MapPost("/api/body-plan", (BodyPlanInput input, RequestResolver resolver, RequestBodyPlanner planner) =>

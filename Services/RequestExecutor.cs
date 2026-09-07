@@ -32,6 +32,9 @@ public sealed partial class RequestExecutor
         BodyPlanResponse? plan = null;
         SuccessExampleResponse? successExample = null;
         var runtimeNotes = new List<string>();
+        var preparedQueryParameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var preparedVariables = BuildVariablesSnapshot(input.Variables);
+        var preparedCustomHeaders = PrepareCustomHeaders(input.Headers, input.Variables);
         var proxyMode = "system";
         string? effectiveProxyUrl = null;
 
@@ -53,7 +56,8 @@ public sealed partial class RequestExecutor
             }
 
             path = ApplyVariables(path, input.Variables);
-            finalUri = new Uri(baseUri, path.TrimStart('/'));
+            preparedQueryParameters = PrepareQueryParameters(input.QueryParameters, input.Variables);
+            finalUri = BuildFinalUri(baseUri, path, preparedQueryParameters);
             successExample = _successExamplePlanner.Build(selectedOperation, method, finalUri);
 
             plan = _requestBodyPlanner.BuildPlan(new BodyPlanInput
@@ -77,7 +81,7 @@ public sealed partial class RequestExecutor
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", input.AccessToken.Trim());
             }
 
-            foreach (var header in input.Headers)
+            foreach (var header in preparedCustomHeaders)
             {
                 if (string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
                 {
@@ -118,13 +122,18 @@ public sealed partial class RequestExecutor
                 ResponseHeaders = responseHeaders,
                 UsedOperationId = selectedOperation?.Id,
                 UsedOperationSummary = selectedOperation?.Summary,
-                ErrorType = null,
-                ErrorMessage = null,
+                ErrorType = response.IsSuccessStatusCode ? null : "http_error",
+                ErrorMessage = response.IsSuccessStatusCode
+                    ? null
+                    : $"IGA API returned {(int)response.StatusCode} {response.ReasonPhrase ?? string.Empty}".TrimEnd(),
                 RequestContentType = plan.ContentType,
                 RequestBodyFormat = plan.BodyFormat,
                 RequestBody = preparedBody,
                 RequestDebugText = requestDebugText,
                 RequestHeaders = requestHeaders,
+                RequestQueryParameters = preparedQueryParameters,
+                RequestVariables = preparedVariables,
+                RequestCustomHeaders = preparedCustomHeaders,
                 ProxyMode = proxyMode,
                 ProxyUrl = effectiveProxyUrl,
                 BodyRequired = plan.BodyRequired,
@@ -144,6 +153,9 @@ public sealed partial class RequestExecutor
                 plan,
                 successExample,
                 runtimeNotes,
+                preparedQueryParameters,
+                preparedVariables,
+                preparedCustomHeaders,
                 proxyMode,
                 effectiveProxyUrl,
                 stopwatch.ElapsedMilliseconds,
@@ -179,6 +191,125 @@ public sealed partial class RequestExecutor
         return baseUrl.EndsWith('/') ? baseUrl : baseUrl + "/";
     }
 
+    private static Dictionary<string, string> PrepareQueryParameters(
+        IReadOnlyDictionary<string, string>? rawQueryParameters,
+        IReadOnlyDictionary<string, string> variables)
+    {
+        var prepared = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (rawQueryParameters is null || rawQueryParameters.Count == 0)
+        {
+            return prepared;
+        }
+
+        foreach (var pair in rawQueryParameters)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key))
+            {
+                continue;
+            }
+
+            prepared[pair.Key.Trim()] = ApplyVariables(pair.Value ?? string.Empty, variables);
+        }
+
+        return prepared;
+    }
+
+    private static Dictionary<string, string> PrepareCustomHeaders(
+        IReadOnlyDictionary<string, string>? rawHeaders,
+        IReadOnlyDictionary<string, string> variables)
+    {
+        var prepared = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (rawHeaders is null || rawHeaders.Count == 0)
+        {
+            return prepared;
+        }
+
+        foreach (var pair in rawHeaders)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key))
+            {
+                continue;
+            }
+
+            prepared[pair.Key.Trim()] = ApplyVariables(pair.Value ?? string.Empty, variables);
+        }
+
+        return prepared;
+    }
+
+    private static Dictionary<string, string> BuildVariablesSnapshot(IReadOnlyDictionary<string, string>? variables)
+    {
+        var snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (variables is null || variables.Count == 0)
+        {
+            return snapshot;
+        }
+
+        foreach (var pair in variables)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+            {
+                continue;
+            }
+
+            snapshot[pair.Key.Trim()] = pair.Value.Trim();
+        }
+
+        return snapshot;
+    }
+
+    private static Uri BuildFinalUri(Uri baseUri, string path, IReadOnlyDictionary<string, string> queryParameters)
+    {
+        var currentUri = new Uri(baseUri, path.TrimStart('/'));
+        if (queryParameters.Count == 0)
+        {
+            return currentUri;
+        }
+
+        var builder = new UriBuilder(currentUri);
+        var merged = ParseQueryString(builder.Query);
+        foreach (var pair in queryParameters)
+        {
+            merged[pair.Key] = pair.Value ?? string.Empty;
+        }
+
+        builder.Query = BuildQueryString(merged);
+        return builder.Uri;
+    }
+
+    private static Dictionary<string, string> ParseQueryString(string? query)
+    {
+        var parsed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return parsed;
+        }
+
+        var segments = query.TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var segment in segments)
+        {
+            var pair = segment.Split('=', 2);
+            var key = Uri.UnescapeDataString(pair[0]);
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            var value = pair.Length > 1 ? Uri.UnescapeDataString(pair[1]) : string.Empty;
+            parsed[key] = value;
+        }
+
+        return parsed;
+    }
+
+    private static string BuildQueryString(IReadOnlyDictionary<string, string> queryParameters)
+    {
+        return string.Join("&", queryParameters
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Key))
+            .Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value ?? string.Empty)}"));
+    }
+
     private static HttpClient CreateHttpClient(
         ExecuteRequestInput input,
         out string proxyMode,
@@ -189,7 +320,7 @@ public sealed partial class RequestExecutor
         proxyMode = "system";
         effectiveProxyUrl = null;
 
-        var timeoutSeconds = Math.Clamp(input.TimeoutSeconds <= 0 ? 30 : input.TimeoutSeconds, 5, 180);
+        var timeoutSeconds = Math.Clamp(input.TimeoutSeconds <= 0 ? 30 : input.TimeoutSeconds, 5, 1800);
         var handler = new SocketsHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
@@ -317,7 +448,7 @@ public sealed partial class RequestExecutor
         return true;
     }
 
-    private static string ApplyVariables(string template, IDictionary<string, string> variables)
+    private static string ApplyVariables(string template, IReadOnlyDictionary<string, string> variables)
     {
         if (string.IsNullOrWhiteSpace(template) || variables.Count == 0)
         {
@@ -506,6 +637,9 @@ public sealed partial class RequestExecutor
         BodyPlanResponse? plan,
         SuccessExampleResponse? successExample,
         IReadOnlyCollection<string> runtimeNotes,
+        IReadOnlyDictionary<string, string> preparedQueryParameters,
+        IReadOnlyDictionary<string, string> preparedVariables,
+        IReadOnlyDictionary<string, string> preparedCustomHeaders,
         string proxyMode,
         string? effectiveProxyUrl,
         long elapsedMilliseconds,
@@ -570,8 +704,11 @@ public sealed partial class RequestExecutor
             RequestContentType = plan?.ContentType ?? input.ContentType ?? string.Empty,
             RequestBodyFormat = plan?.BodyFormat ?? input.BodyFormat,
             RequestBody = preparedBody,
-            RequestDebugText = BuildFallbackRequestDebugText(method, finalUri, input, preparedBody, plan),
-            RequestHeaders = BuildFallbackRequestHeaders(finalUri, input, plan),
+            RequestDebugText = BuildFallbackRequestDebugText(method, finalUri, input, preparedBody, plan, preparedCustomHeaders),
+            RequestHeaders = BuildFallbackRequestHeaders(finalUri, input, plan, preparedCustomHeaders),
+            RequestQueryParameters = new Dictionary<string, string>(preparedQueryParameters, StringComparer.OrdinalIgnoreCase),
+            RequestVariables = new Dictionary<string, string>(preparedVariables, StringComparer.OrdinalIgnoreCase),
+            RequestCustomHeaders = new Dictionary<string, string>(preparedCustomHeaders, StringComparer.OrdinalIgnoreCase),
             ProxyMode = proxyMode,
             ProxyUrl = effectiveProxyUrl,
             BodyRequired = plan?.BodyRequired ?? false,
@@ -584,7 +721,8 @@ public sealed partial class RequestExecutor
     private static Dictionary<string, string[]> BuildFallbackRequestHeaders(
         Uri? finalUri,
         ExecuteRequestInput input,
-        BodyPlanResponse? plan)
+        BodyPlanResponse? plan,
+        IReadOnlyDictionary<string, string> preparedCustomHeaders)
     {
         var headers = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
         {
@@ -596,7 +734,7 @@ public sealed partial class RequestExecutor
             headers["Authorization"] = new List<string> { $"Bearer {input.AccessToken.Trim()}" };
         }
 
-        foreach (var header in input.Headers)
+        foreach (var header in preparedCustomHeaders)
         {
             if (string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
             {
@@ -623,10 +761,11 @@ public sealed partial class RequestExecutor
         Uri? finalUri,
         ExecuteRequestInput input,
         string preparedBody,
-        BodyPlanResponse? plan)
+        BodyPlanResponse? plan,
+        IReadOnlyDictionary<string, string> preparedCustomHeaders)
     {
         var uri = finalUri ?? new Uri("http://localhost/");
-        var headers = BuildFallbackRequestHeaders(finalUri, input, plan);
+        var headers = BuildFallbackRequestHeaders(finalUri, input, plan, preparedCustomHeaders);
         return BuildRequestDebugText(method, uri, headers, preparedBody, plan);
     }
 

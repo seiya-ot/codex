@@ -17,6 +17,8 @@ IIJ IDガバナンス管理サービスと YESOD API マニュアルを巡回し
   - テナント URL、アクセストークン、任意パス、変数展開を使って実リクエストを送信します。
 - `Services/CoveragePlanner.cs`
   - カタログ API に対して、`ready` / `needs_input` / `manual_fixture` の観点で網羅検証の準備状況を出します。
+- `Services/ApiErrorLogStore.cs`
+  - API 実行で発生した通信例外と HTTP エラーを `Data/api-error-log.json` に保存します。認証・Cookie 系ヘッダ、URL クエリ、代表的なシークレット値は保存前に除外または伏せ字にします。
 - `wwwroot/`
   - 単一ページの UI です。接続設定、日本語リクエスト、候補選択、直接編集、実行結果、検証プランをまとめています。
 
@@ -68,3 +70,4 @@ PowerShell:
 - 日本語解決は候補提示を主目的にしており、精度が足りない場合は Method / Path を直接編集してください。
 - `POST` / `PUT` / `PATCH` 系や import/export 系 API は、テナント固有の実データや手動フィクスチャが必要になる前提です。
 - 任意実行モードではカタログに無いパスも直接指定できます。
+- エラー履歴はアプリの実行ユーザーがローカルで参照する診断用データです。画面から個別または一括で削除できます。既定の保存上限は 200 件で、`appsettings.json` の `ErrorLog:MaximumEntries` で変更できます。
